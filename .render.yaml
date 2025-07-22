@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: easyfreightbooking-api
+    env: python
+    buildCommand: ""
+    startCommand: "gunicorn app:app"
+Add .render.yaml

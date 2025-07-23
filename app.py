@@ -13,15 +13,15 @@ def calculate_price():
     data = request.json
 
     try:
-        pickup_coord = data["pickup_coordinate"]
+        pickup_coordinate = data["pickup_coordinate"]
         pickup_country = data["pickup_country"]
         pickup_zip = str(data["pickup_zip"])
 
-        delivery_coord = data["delivery_coordinate"]
+        delivery_coordinate = data["delivery_coordinate"]
         delivery_country = data["delivery_country"]
         delivery_zip = str(data["delivery_zip"])
 
-        weight = float(data["chargeable_weight"])
+        chargeable_weight = float(data["chargeable_weight"])
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 

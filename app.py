@@ -1,104 +1,89 @@
 from flask import Flask, request, jsonify
-import math
+from math import radians, sin, cos, sqrt, atan2, log
 
 app = Flask(__name__)
 
-MAX_WEIGHT_ROAD = 25160  # kg
+# Haversine-formeln för att räkna avstånd i km
+def calculate_distance_km(coord1, coord2):
+    R = 6371.0  # Jordens radie i km
+    lat1, lon1 = radians(coord1[0]), radians(coord1[1])
+    lat2, lon2 = radians(coord2[0]), radians(coord2[1])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat / 2)**2 + cos(lat1) * cos(lat2) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return R * c
 
-def calculate_road_price(ftl_price, weight, breakpoint=20000):
-    # Prispunkter (dessa kan göras dynamiska)
-    p1, pricep1 = 500, 0.7 * ftl_price / 500
-    p2, p2k, p2m = 2000, 0.4, 100
-    p3, p3k, p3m = 8000, 0.25, 200
-
-    adjustment = 1.0  # t.ex. rabatt kan appliceras här
-
-    # Prispunktsvärden
-    x1 = p1
-    y1 = pricep1
-    x2 = p2
-    y2 = (p2k * ftl_price + p2m) * adjustment / p2
-    x3 = p3
-    y3 = (p3k * ftl_price + p3m) * adjustment / p3
-    x4 = breakpoint
-    y4 = ftl_price / breakpoint
-
-    # Räknar ut konstanter
-    n1 = (math.log(y2) - math.log(y1)) / (math.log(x2) - math.log(x1))
-    a1 = y1 / (x1 ** n1)
-
-    n2 = (math.log(y3) - math.log(y2)) / (math.log(x3) - math.log(x2))
-    a2 = y2 / (x2 ** n2)
-
-    n3 = (math.log(y4) - math.log(y3)) / (math.log(x4) - math.log(x3))
-    a3 = y3 / (x3 ** n3)
-
-    # Beräkna pris
-    if weight < p2:
-        price_per_kg = a1 * weight ** n1
-    elif weight < p3:
-        price_per_kg = a2 * weight ** n2
-    elif weight <= breakpoint:
-        price_per_kg = a3 * weight ** n3
-    elif weight <= MAX_WEIGHT_ROAD:
-        return ftl_price  # Helt bilpris
-    else:
-        raise ValueError("Weight exceeds maximum allowed for road transport")
-
-    return min(weight * price_per_kg, ftl_price)
-
-
-def calculate_intermodal_rail(ftl_price, weight):
-    raise NotImplementedError("Intermodal rail pricing not implemented yet")
-
-
-def calculate_conventional_rail(ftl_price, weight):
-    raise NotImplementedError("Conventional rail pricing not implemented yet")
-
-
-def calculate_ocean(ftl_price, weight):
-    raise NotImplementedError("Ocean freight pricing not implemented yet")
-
+# Segmentformelns konstanter
+def segment_constants(x1, y1, x2, y2):
+    n = (log(y2) - log(y1)) / (log(x2) - log(x1))
+    a = y1 / (x1 ** n)
+    return a, n
 
 @app.route("/calculate", methods=["POST"])
-def calculate_price():
+def calculate():
     data = request.json
 
-    pickup_zip = data.get("pickup_zip")
-    delivery_zip = data.get("delivery_zip")
-    transport_type = data.get("transport_type")
-    weight = float(data.get("weight", 1000))
-    ftl_price = float(data.get("ftl_price", 950))
-    breakpoint = float(data.get("breakpoint", 20000))
+    pickup_coord = data.get("pickup_coordinate")  # [lat, lon]
+    delivery_coord = data.get("delivery_coordinate")  # [lat, lon]
+    weight = data.get("weight")  # i kg
+    breakpoint = data.get("breakpoint", 20000)
+    maxweight = 25160
 
-    if not transport_type:
-        return jsonify({"error": "transport_type is required"}), 400
+    if not pickup_coord or not delivery_coord or weight is None:
+        return jsonify({"error": "Missing pickup, delivery or weight"}), 400
 
-    try:
-        if transport_type == "road":
-            price = calculate_road_price(ftl_price, weight, breakpoint)
-        elif transport_type == "intermodal_rail":
-            price = calculate_intermodal_rail(ftl_price, weight)
-        elif transport_type == "conventional_rail":
-            price = calculate_conventional_rail(ftl_price, weight)
-        elif transport_type == "ocean":
-            price = calculate_ocean(ftl_price, weight)
-        else:
-            return jsonify({"error": f"Unknown transport_type: {transport_type}"}), 400
+    # Avståndsberäkning
+    base_distance_km = calculate_distance_km(pickup_coord, delivery_coord)
+    distance_km = base_distance_km * 1.2  # 20% tillägg
 
-        return jsonify({
-            "total_price_eur": round(price, 2),
-            "ftl_price_eur": round(ftl_price, 2),
-            "weight_kg": weight,
-            "transport_type": transport_type,
-            "source": "magic-formula" if transport_type == "road" else "not-implemented"
-        })
+    # Dummy-priser
+    km_price = 1.0
+    balance_factor = 1.0
 
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except NotImplementedError as e:
-        return jsonify({"error": str(e)}), 501
+    ftl_price = distance_km * km_price * balance_factor
 
+    # Magiska trösklar
+    p1 = 150
+    price_p1 = 0.9 * ftl_price / p1
+
+    p2 = 1000
+    p2k = 0.6
+    p2m = 100
+
+    p3 = 5000
+    p3k = 0.4
+    p3m = 200
+
+    y1 = price_p1
+    y2 = (p2k * ftl_price + p2m) / p2
+    y3 = (p3k * ftl_price + p3m) / p3
+    y4 = ftl_price / breakpoint
+
+    a1, n1 = segment_constants(p1, y1, p2, y2)
+    a2, n2 = segment_constants(p2, y2, p3, y3)
+    a3, n3 = segment_constants(p3, y3, breakpoint, y4)
+
+    # Pris för vikt
+    if weight < p2:
+        total_price = min(weight * (a1 * weight ** n1), ftl_price)
+    elif weight < p3:
+        total_price = min(weight * (a2 * weight ** n2), ftl_price)
+    elif weight <= breakpoint:
+        total_price = min(weight * (a3 * weight ** n3), ftl_price)
+    else:
+        total_price = ftl_price
+
+    return jsonify({
+        "pickup_coordinate": pickup_coord,
+        "delivery_coordinate": delivery_coord,
+        "distance_km": round(distance_km, 2),
+        "weight_kg": weight,
+        "ftl_price_eur": round(ftl_price, 2),
+        "total_price_eur": round(total_price, 2),
+        "currency": "EUR",
+        "source": "calculated"
+    })
 
 if __name__ == "__main__":
     app.run(debug=True)

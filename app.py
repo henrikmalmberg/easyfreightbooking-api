@@ -15,7 +15,7 @@ def calculate_price():
     try:
         pickup_coord = data["pickup_coordinate"]
         delivery_coord = data["delivery_coordinate"]
-        weight = float(data["weight"])
+        chargeable_weight = float(data["chargeable_weight"])
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
@@ -45,12 +45,10 @@ def calculate_price():
         return R * c
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
-
-    # Beräkna FTL-pris
     ftl_price = round(distance_km * km_price)
 
     # Magisk formel
-    y1 = (price_p1) / p1
+    y1 = price_p1 / p1
     y2 = ((p2k * ftl_price + p2m)) / p2
     y3 = ((p3k * ftl_price + p3m)) / p3
     y4 = ftl_price / breakpoint
@@ -64,19 +62,19 @@ def calculate_price():
     n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3))
     a3 = y3 / (p3 ** n3)
 
-    if weight < p1:
-        total_price = round(ftl_price * weight / maxweight)
+    if chargeable_weight < p1:
+        total_price = round(ftl_price * chargeable_weight / maxweight)
         source = "below-p1"
-    elif p1 <= weight < p2:
-        total_price = round(min(a1 * weight ** n1 * weight, ftl_price))
+    elif p1 <= chargeable_weight < p2:
+        total_price = round(min(a1 * chargeable_weight ** n1 * chargeable_weight, ftl_price))
         source = "magic-formula"
-    elif p2 <= weight < p3:
-        total_price = round(min(a2 * weight ** n2 * weight, ftl_price))
+    elif p2 <= chargeable_weight < p3:
+        total_price = round(min(a2 * chargeable_weight ** n2 * chargeable_weight, ftl_price))
         source = "magic-formula"
-    elif p3 <= weight <= breakpoint:
-        total_price = round(min(a3 * weight ** n3 * weight, ftl_price))
+    elif p3 <= chargeable_weight <= breakpoint:
+        total_price = round(min(a3 * chargeable_weight ** n3 * chargeable_weight, ftl_price))
         source = "magic-formula"
-    elif breakpoint < weight <= maxweight:
+    elif breakpoint < chargeable_weight <= maxweight:
         total_price = ftl_price
         source = "capped-to-ftl"
     else:

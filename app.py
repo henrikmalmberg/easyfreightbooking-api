@@ -19,7 +19,7 @@ def calculate_price():
     p3 = 3000
     p3k = 0.45
     p3m = 120
-    breakpoint = 10000
+    breakpoint = 20000
     maxweight = 24000
     adjustment = 1.0  # 1 - rabatt (t.ex. 0.95 för 5 % rabatt)
 

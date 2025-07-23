@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from math import log
+from math import radians, sin, cos, sqrt, atan2, log
 
 app = Flask(__name__)
 
@@ -9,36 +9,39 @@ def calculate_price():
 
     try:
         # Input
-        weight = float(data.get("weight_kg"))
-        origin = data.get("origin")
-        destination = data.get("destination")
+        lat1 = float(data["origin"]["lat"])
+        lon1 = float(data["origin"]["lon"])
+        lat2 = float(data["destination"]["lat"])
+        lon2 = float(data["destination"]["lon"])
+        weight = float(data["weight_kg"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "Invalid input data"}), 400
 
-        # Storcirkelberäkning
-        lat1, lon1 = origin["lat"], origin["lon"]
-        lat2, lon2 = destination["lat"], destination["lon"]
-        distance_km = haversine(lat1, lon1, lat2, lon2) * 1.2
+    # Parametrar för storcirkel
+    R = 6371.0  # Jordens radie i km
 
-        # Prissättning
-        km_rate = 1.1  # €/km
-        ftl_price = round(distance_km * km_rate)
-        maxweight = 25160
-        conversion_factor = 1000  # referensvikt i VBA
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance_km = round(R * c * 1.2)  # +20% för faktisk vägsträcka
 
-        # Tröskelvärden
-        p1 = 30
-        pp1 = 50
-        p2 = 740
-        p2k = 0.1
-        p2m = 100
-        p3 = 1850
-        p3k = 0.12
-        p3m = 120
-        breakpoint = 20000
+    # Dynamiska faktorer
+    km_price = 1.15  # €/km, exempel
+    ftl_price = round(distance_km * km_price)
 
-        # Formelparametrar
-        y1 = pp1 / p1
-        y2 = (p2k * ftl_price + p2m) / p2
-        y3 = (p3k * ftl_price + p3m) / p3
+    # Magiska formelns parametrar
+    p1, pp1 = 30, 50
+    p2, p2k, p2m = 740, 0.1, 100
+    p3, p3k, p3m = 1850, 0.12, 120
+    breakpoint = 20000
+    maxweight = 25160
+
+    # Logaritmisk formel
+    try:
+        y1 = (pp1) / p1
+        y2 = ((p2k * ftl_price + p2m)) / p2
+        y3 = ((p3k * ftl_price + p3m)) / p3
         y4 = ftl_price / breakpoint
 
         n1 = (log(y2) - log(y1)) / (log(p2) - log(p1))
@@ -50,48 +53,28 @@ def calculate_price():
         n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3))
         a3 = y3 / (p3 ** n3)
 
-        # Prisberäkning
         if weight < p1:
             total_price = round(ftl_price * weight / maxweight)
-            source = "below-p1"
         elif p1 <= weight < p2:
-            price_per_kg = a1 * weight ** n1
-            total_price = round(min(weight * price_per_kg, ftl_price) / (weight / conversion_factor))
-            source = "magic-formula"
+            total_price = round(min(a1 * weight ** n1 * weight, ftl_price))
         elif p2 <= weight < p3:
-            price_per_kg = a2 * weight ** n2
-            total_price = round(min(weight * price_per_kg, ftl_price) / (weight / conversion_factor))
-            source = "magic-formula"
+            total_price = round(min(a2 * weight ** n2 * weight, ftl_price))
         elif p3 <= weight <= breakpoint:
-            price_per_kg = a3 * weight ** n3
-            total_price = round(min(weight * price_per_kg, ftl_price) / (weight / conversion_factor))
-            source = "magic-formula"
+            total_price = round(min(a3 * weight ** n3 * weight, ftl_price))
         elif breakpoint < weight <= maxweight:
             total_price = ftl_price
-            source = "capped-to-ftl"
         else:
             return jsonify({"error": "Weight exceeds max weight for road transport"}), 400
 
-        return jsonify({
-            "total_price_eur": total_price,
-            "ftl_price_eur": ftl_price,
-            "weight_kg": round(weight, 1),
-            "source": source,
-            "currency": "EUR"
-        })
-
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Calculation error: {str(e)}"}), 500
 
-def haversine(lat1, lon1, lat2, lon2):
-    from math import radians, sin, cos, sqrt, atan2
-    R = 6371
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    lat1 = radians(lat1)
-    lat2 = radians(lat2)
-    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
+    return jsonify({
+        "total_price_eur": total_price,
+        "ftl_price_eur": ftl_price,
+        "weight_kg": round(weight),
+        "distance_km": distance_km
+    })
 
 if __name__ == "__main__":
     app.run(debug=True)

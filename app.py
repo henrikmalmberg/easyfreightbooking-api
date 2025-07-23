@@ -13,31 +13,29 @@ def calculate_price():
     data = request.json
 
     try:
-        pickup_coordinate = data["pickup_coordinate"]
+        pickup_coord = data["pickup_coordinate"]
         pickup_country = data["pickup_country"]
-        pickup_zip = str(data["pickup_zip"])
+        pickup_postal = data["pickup_postal_prefix"]
 
-        delivery_coordinate = data["delivery_coordinate"]
+        delivery_coord = data["delivery_coordinate"]
         delivery_country = data["delivery_country"]
-        delivery_zip = str(data["delivery_zip"])
+        delivery_postal = data["delivery_postal_prefix"]
 
-        chargeable_weight = float(data["chargeable_weight"])
+        weight = float(data["chargeable_weight"])
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
-    # Förbjudna länder eller postnummer
-    forbidden = config.get("forbidden", {})
-    if pickup_country in forbidden.get("countries", []) or delivery_country in forbidden.get("countries", []):
-        return jsonify({"error": "One of the countries is not allowed"}), 400
+    # Kontrollera förbjudna zoner
+    forbidden_zones = config.get("forbidden_zones", {})
+    if pickup_country in forbidden_zones and pickup_postal in forbidden_zones[pickup_country]:
+        return jsonify({"error": "Pickup zone is forbidden"}), 400
+    if delivery_country in forbidden_zones and delivery_postal in forbidden_zones[delivery_country]:
+        return jsonify({"error": "Delivery zone is forbidden"}), 400
 
-    if pickup_zip[:2] in forbidden.get("zip_prefixes", []) or delivery_zip[:2] in forbidden.get("zip_prefixes", []):
-        return jsonify({"error": "One of the zip code regions is not allowed"}), 400
-
-    # Läs in övriga parametrar
+    # Läs in parametrar
     km_price = config["km_price_eur"]
     maxweight = config["max_weight_kg"]
     breakpoint = config["default_breakpoint"]
-
     p1 = config["p1"]
     price_p1 = config["price_p1"]
     p2 = config["p2"]
@@ -47,9 +45,6 @@ def calculate_price():
     p3k = config["p3k"]
     p3m = config["p3m"]
 
-    # Hämta balansfaktor
-    balance = config.get("balance_factors", {}).get(pickup_country, {}).get(delivery_country, 1.0)
-
     # Storcirkelberäkning
     def haversine(coord1, coord2):
         R = 6371
@@ -57,19 +52,23 @@ def calculate_price():
         lat2, lon2 = map(radians, coord2)
         dlat = lat2 - lat1
         dlon = lon2 - lon1
-        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
         c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
 
-    # Beräkna FTL-pris
-    ftl_price = round(distance_km * km_price * balance)
+    # Balansfaktor
+    balance_key = f"{pickup_country}-{delivery_country}"
+    balance_factor = config.get("balance_factors", {}).get(balance_key, 1.0)
 
-    # Magiska formeln
-    y1 = (price_p1) / p1
-    y2 = ((p2k * ftl_price + p2m)) / p2
-    y3 = ((p3k * ftl_price + p3m)) / p3
+    # Beräkna FTL-pris
+    ftl_price = round(distance_km * km_price * balance_factor)
+
+    # Magisk formel
+    y1 = price_p1 / p1
+    y2 = (p2k * ftl_price + p2m) / p2
+    y3 = (p3k * ftl_price + p3m) / p3
     y4 = ftl_price / breakpoint
 
     n1 = (log(y2) - log(y1)) / (log(p2) - log(p1))
@@ -81,7 +80,6 @@ def calculate_price():
     n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3))
     a3 = y3 / (p3 ** n3)
 
-    # Prissättning enligt vikt
     if weight < p1:
         total_price = round(ftl_price * weight / maxweight)
     elif p1 <= weight < p2:
@@ -96,10 +94,10 @@ def calculate_price():
         return jsonify({"error": "Weight exceeds max weight for road transport"}), 400
 
     return jsonify({
-        "ftl_price_eur": ftl_price,
-        "total_price_eur": total_price,
+        "currency": "EUR",
         "distance_km": distance_km,
-        "currency": "EUR"
+        "ftl_price_eur": ftl_price,
+        "total_price_eur": total_price
     })
 
 if __name__ == "__main__":

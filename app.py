@@ -14,16 +14,26 @@ def calculate_price():
 
     try:
         pickup_coord = data["pickup_coordinate"]
-        delivery_coord = data["delivery_coordinate"]
-        chargeable_weight = float(data["chargeable_weight"])
         pickup_country = data["pickup_country"]
         pickup_zip = str(data["pickup_zip"])
+
+        delivery_coord = data["delivery_coordinate"]
         delivery_country = data["delivery_country"]
         delivery_zip = str(data["delivery_zip"])
+
+        weight = float(data["chargeable_weight"])
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
-    # Ladda parametrar
+    # Förbjudna länder eller postnummer
+    forbidden = config.get("forbidden", {})
+    if pickup_country in forbidden.get("countries", []) or delivery_country in forbidden.get("countries", []):
+        return jsonify({"error": "One of the countries is not allowed"}), 400
+
+    if pickup_zip[:2] in forbidden.get("zip_prefixes", []) or delivery_zip[:2] in forbidden.get("zip_prefixes", []):
+        return jsonify({"error": "One of the zip code regions is not allowed"}), 400
+
+    # Läs in övriga parametrar
     km_price = config["km_price_eur"]
     maxweight = config["max_weight_kg"]
     breakpoint = config["default_breakpoint"]
@@ -37,12 +47,8 @@ def calculate_price():
     p3k = config["p3k"]
     p3m = config["p3m"]
 
-    # Kontrollera förbjudna zoner
-    forbidden = config.get("forbidden_zones", {})
-    if pickup_country in forbidden and pickup_zip[:2] in forbidden[pickup_country]:
-        return jsonify({"error": f"Pickup location {pickup_country}-{pickup_zip} is restricted"}), 403
-    if delivery_country in forbidden and delivery_zip[:2] in forbidden[delivery_country]:
-        return jsonify({"error": f"Delivery location {delivery_country}-{delivery_zip} is restricted"}), 403
+    # Hämta balansfaktor
+    balance = config.get("balance_factors", {}).get(pickup_country, {}).get(delivery_country, 1.0)
 
     # Storcirkelberäkning
     def haversine(coord1, coord2):
@@ -51,21 +57,16 @@ def calculate_price():
         lat2, lon2 = map(radians, coord2)
         dlat = lat2 - lat1
         dlon = lon2 - lon1
-        a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
         c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return R * c
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
 
     # Beräkna FTL-pris
-    base_ftl_price = distance_km * km_price
+    ftl_price = round(distance_km * km_price * balance)
 
-    # Balansfaktor
-    relation = f"{pickup_country}-{delivery_country}"
-    balance = config.get("balance_factors", {}).get(relation, 1.0)
-    ftl_price = round(base_ftl_price * balance)
-
-    # Magisk formel
+    # Magiska formeln
     y1 = (price_p1) / p1
     y2 = ((p2k * ftl_price + p2m)) / p2
     y3 = ((p3k * ftl_price + p3m)) / p3
@@ -80,18 +81,19 @@ def calculate_price():
     n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3))
     a3 = y3 / (p3 ** n3)
 
-    if chargeable_weight < p1:
-        total_price = round(ftl_price * chargeable_weight / maxweight)
-    elif p1 <= chargeable_weight < p2:
-        total_price = round(min(a1 * chargeable_weight ** n1 * chargeable_weight, ftl_price))
-    elif p2 <= chargeable_weight < p3:
-        total_price = round(min(a2 * chargeable_weight ** n2 * chargeable_weight, ftl_price))
-    elif p3 <= chargeable_weight <= breakpoint:
-        total_price = round(min(a3 * chargeable_weight ** n3 * chargeable_weight, ftl_price))
-    elif breakpoint < chargeable_weight <= maxweight:
+    # Prissättning enligt vikt
+    if weight < p1:
+        total_price = round(ftl_price * weight / maxweight)
+    elif p1 <= weight < p2:
+        total_price = round(min(a1 * weight ** n1 * weight, ftl_price))
+    elif p2 <= weight < p3:
+        total_price = round(min(a2 * weight ** n2 * weight, ftl_price))
+    elif p3 <= weight <= breakpoint:
+        total_price = round(min(a3 * weight ** n3 * weight, ftl_price))
+    elif breakpoint < weight <= maxweight:
         total_price = ftl_price
     else:
-        return jsonify({"error": "Chargeable weight exceeds max weight"}), 400
+        return jsonify({"error": "Weight exceeds max weight for road transport"}), 400
 
     return jsonify({
         "ftl_price_eur": ftl_price,
@@ -99,7 +101,6 @@ def calculate_price():
         "distance_km": distance_km,
         "currency": "EUR"
     })
-
 
 if __name__ == "__main__":
     app.run(debug=True)

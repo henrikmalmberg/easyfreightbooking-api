@@ -1,0 +1,13 @@
+{
+  "km_price_eur": 1.35,
+  "max_weight_kg": 25160,
+  "default_breakpoint": 20000,
+  "p1": 30,
+  "price_p1": 50,
+  "p2": 740,
+  "p2k": 0.1,
+  "p2m": 100,
+  "p3": 1850,
+  "p3k": 0.12,
+  "p3m": 120
+}

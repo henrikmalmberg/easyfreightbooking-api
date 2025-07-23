@@ -13,7 +13,7 @@ def calculate_price():
     goods_type = data.get("goods_type", "Pallets")
     kg = float(data.get("chargeable_weight", 1000))
     breakpoint = float(data.get("breakpoint", 20000))
-    maxweight = float(data.get("maxweight", 30000))
+    maxweight = float(data.get("maxweight", 24000))
 
     # Simulerat FTL-pris
     ftl_price = 950.0

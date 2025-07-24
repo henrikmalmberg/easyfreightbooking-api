@@ -1,24 +1,89 @@
 {
-  "km_price_eur": 1.2,
-  "max_weight_kg": 25160,
-  "default_breakpoint": 20000,
-  "p1": 30,
-  "price_p1": 50,
-  "p2": 740,
-  "p2k": 0.1,
-  "p2m": 100,
-  "p3": 1850,
-  "p3k": 0.12,
-  "p3m": 120,
-  "forbidden_zones": {
-    "BY": ["22", "23"],
-    "RU": ["30", "31"],
-    "AF": []
+  "road_freight": {
+    "km_price_eur": 1.2,
+    "max_weight_kg": 25160,
+    "default_breakpoint": 20000,
+    "p1": 30,
+    "price_p1": 50,
+    "p2": 740,
+    "p2k": 0.1,
+    "p2m": 100,
+    "p3": 1850,
+    "p3k": 0.12,
+    "p3m": 120,
+    "available_zones": {
+      "SE": ["20-49", "50"],
+      "DE": ["01-09", "10-33"],
+      "IT": ["00-39"]
+    },
+    "balance_factors": {
+      "SE-DE": 1.0,
+      "DE-SE": 1.1,
+      "SE-IT": 0.95,
+      "IT-SE": 1.05
+    }
   },
-  "balance_factors": {
-    "SE-DE": 1.0,
-    "DE-SE": 1.1,
-    "SE-IT": 0.95,
-    "IT-SE": 1.05
+  "intermodal_rail": {
+    "km_price_eur": 1.0,
+    "max_weight_kg": 24500,
+    "default_breakpoint": 18000,
+    "p1": 50,
+    "price_p1": 40,
+    "p2": 800,
+    "p2k": 0.09,
+    "p2m": 80,
+    "p3": 2000,
+    "p3k": 0.11,
+    "p3m": 90,
+    "available_zones": {
+      "SE": ["20-49"],
+      "DE": ["10-33"]
+    },
+    "balance_factors": {
+      "SE-DE": 1.0,
+      "DE-SE": 1.05
+    }
+  },
+  "conventional_rail": {
+    "km_price_eur": 0.9,
+    "max_weight_kg": 23000,
+    "default_breakpoint": 17000,
+    "p1": 60,
+    "price_p1": 35,
+    "p2": 900,
+    "p2k": 0.08,
+    "p2m": 70,
+    "p3": 2200,
+    "p3k": 0.1,
+    "p3m": 100,
+    "available_zones": {
+      "SE": ["20-49"],
+      "DE": ["01-33"]
+    },
+    "balance_factors": {
+      "SE-DE": 0.98,
+      "DE-SE": 1.02
+    }
+  },
+  "ocean_freight": {
+    "km_price_eur": 0.6,
+    "max_weight_kg": 27000,
+    "default_breakpoint": 22000,
+    "p1": 70,
+    "price_p1": 60,
+    "p2": 1000,
+    "p2k": 0.07,
+    "p2m": 60,
+    "p3": 2500,
+    "p3k": 0.09,
+    "p3m": 110,
+    "available_zones": {
+      "SE": ["20-49"],
+      "IT": ["00-39"]
+    },
+    "balance_factors": {
+      "SE-IT": 0.9,
+      "IT-SE": 1.1
+    }
   }
 }

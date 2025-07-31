@@ -38,23 +38,16 @@ def is_zone_allowed(country, postal_prefix, available_zones):
                 return True
     return False
 
-def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight):
-    # Kontrollera tillgänglighet
+def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight, mode_name=None):
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and
             is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
         return {"status": "Not available for this request"}
 
-    # Storcirkelavstånd med 20% tillägg
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
-
-    # Balansfaktor
     balance_key = f"{pickup_country}-{delivery_country}"
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
-
-    # FTL-pris
     ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
 
-    # Magisk formel
     p1 = mode_config["p1"]
     price_p1 = mode_config["price_p1"]
     p2 = mode_config["p2"]
@@ -93,11 +86,9 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     else:
         return {"status": "Weight exceeds max weight"}
 
-    # Transittid: 1 dag per 500 km (avrundat) som intervall
     base_transit = max(1, round(distance_km / 500))
     transit_time_days = [base_transit, base_transit + 1]
 
-    # Första möjliga lastdag
     try:
         now_utc = datetime.utcnow()
         tz_name = pytz.country_timezones[pickup_country.lower()][0]
@@ -120,6 +111,10 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         if pickup_date.weekday() < 5 and pickup_date not in country_holidays:
             added_days += 1
 
+    # Extra dag för ocean_freight och conventional_rail
+    if mode_name in ["ocean_freight", "conventional_rail"]:
+        pickup_date += timedelta(days=1)
+
     earliest_pickup_date = pickup_date.isoformat()
 
     return {
@@ -135,7 +130,6 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.json
-
     try:
         pickup_coord = data["pickup_coordinate"]
         pickup_country = data["pickup_country"]
@@ -158,7 +152,8 @@ def calculate():
                 pickup_postal,
                 delivery_country,
                 delivery_postal,
-                weight
+                weight,
+                mode_name=mode
             )
         else:
             results[mode] = {"status": "Not available for this request"}

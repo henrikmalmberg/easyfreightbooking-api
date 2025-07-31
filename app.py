@@ -1,12 +1,60 @@
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log
 import json
+from datetime import datetime, timedelta
+import holidays
+import pytz
 
 app = Flask(__name__)
 
 # Läs in konfigurationsdata
 with open("config.json", "r") as f:
     config = json.load(f)
+
+# Transit time: 1 day per 500 km, rounded to nearest integer
+def calculate_transit_time(distance_km):
+    days = round(distance_km / 500)
+    return f"{days}–{days+1} days"
+
+# Första möjliga lastdag baserat på lokal tid och helgdagar
+def calculate_first_loading_date(country_code):
+    country_holidays = holidays.country_holidays(country_code, observed=True)
+    tz = pytz.timezone(country_to_timezone.get(country_code, "Europe/Stockholm"))
+
+    now_local = datetime.now(tz)
+    cutoff = now_local.replace(hour=10, minute=0, second=0, microsecond=0)
+    days_to_add = 1 if now_local < cutoff else 2
+
+    first_day = now_local.date() + timedelta(days=days_to_add)
+    while first_day in country_holidays or first_day.weekday() >= 5:
+        first_day += timedelta(days=1)
+
+    return first_day.isoformat()
+
+# Koppling landkod -> tidszon (lägg till fler vid behov)
+country_to_timezone = {
+    "SE": "Europe/Stockholm",
+    "DE": "Europe/Berlin",
+    "FR": "Europe/Paris",
+    "IT": "Europe/Rome",
+    "ES": "Europe/Madrid",
+    "NL": "Europe/Amsterdam",
+    "BE": "Europe/Brussels",
+    "PL": "Europe/Warsaw",
+    "RO": "Europe/Bucharest",
+    "CZ": "Europe/Prague",
+    "GR": "Europe/Athens",
+    "PT": "Europe/Lisbon",
+    "HU": "Europe/Budapest",
+    "AT": "Europe/Vienna",
+    "BG": "Europe/Sofia",
+    "DK": "Europe/Copenhagen",
+    "FI": "Europe/Helsinki",
+    "NO": "Europe/Oslo",
+    "CH": "Europe/Zurich",
+    "UK": "Europe/London",
+    "UA": "Europe/Kyiv"
+}
 
 def haversine(coord1, coord2):
     R = 6371
@@ -36,21 +84,15 @@ def is_zone_allowed(country, postal_prefix, available_zones):
     return False
 
 def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight):
-    # Kontrollera tillgänglighet
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
         return {"status": "Not available for this request"}
 
-    # Storcirkelavstånd med 20% tillägg
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
-
-    # Balansfaktor
     balance_key = f"{pickup_country}-{delivery_country}"
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
-
-    # FTL-pris
     ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
 
-    # Magisk formel
+    # Magiska prisformeln
     p1 = mode_config["p1"]
     price_p1 = mode_config["price_p1"]
     p2 = mode_config["p2"]
@@ -94,13 +136,14 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "total_price_eur": total_price,
         "ftl_price_eur": ftl_price,
         "distance_km": distance_km,
-        "currency": "EUR"
+        "currency": "EUR",
+        "transit_time": calculate_transit_time(distance_km),
+        "first_possible_loading_date": calculate_first_loading_date(pickup_country)
     }
 
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.json
-
     try:
         pickup_coord = data["pickup_coordinate"]
         pickup_country = data["pickup_country"]

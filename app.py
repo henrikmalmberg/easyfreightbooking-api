@@ -1,3 +1,4 @@
+from flask_cors import CORS
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log
 from datetime import datetime, timedelta

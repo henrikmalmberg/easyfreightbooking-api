@@ -12,19 +12,19 @@
     "p3k": 0.12,
     "p3m": 120,
     "available_zones": {
-      "SE": ["20-49", "50"],
-      "DE": ["01-09", "10-33"],
-      "IT": ["00-39"]
+      "SE": ["20-89", "90"],
+      "DE": ["01-09", "10-99"],
+      "IT": ["00-99"]
     },
     "balance_factors": {
       "SE-DE": 1.0,
-      "DE-SE": 1.1,
-      "SE-IT": 0.95,
-      "IT-SE": 1.05
+      "DE-SE": 1.0,
+      "SE-IT": 1.0,
+      "IT-SE": 1..0
     }
   },
   "intermodal_rail": {
-    "km_price_eur": 1.0,
+    "km_price_eur": 1.1,
     "max_weight_kg": 24500,
     "default_breakpoint": 18000,
     "p1": 50,

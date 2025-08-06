@@ -10,7 +10,8 @@ app = Flask(__name__)
 
 CORS(app, origins=[
     "https://easyfreightbooking.com",
-    "https://easyfreightbooking-dashboard.onrender.com"
+    "https://easyfreightbooking-dashboard.onrender.com",
+    "https://easyfreightbooking-dashboard.onrender.com/new-booking"
 ])
 
 

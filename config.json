@@ -140,8 +140,8 @@
       "IT": ["40-43"]
     },
     "balance_factors": {
-      "SE-IT": 1.0,
-      "SE-SE": 1.0
+      "SE-IT": 2.0,
+      "IT-SE": 1.0
     }
   },
   "ocean_freight": {

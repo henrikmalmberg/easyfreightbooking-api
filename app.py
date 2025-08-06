@@ -8,7 +8,10 @@ import json
 
 app = Flask(__name__)
 
-CORS(app, origins=["https://easyfreightbooking.com"])
+CORS(app, origins=[
+    "https://easyfreightbooking.com",
+    "https://easyfreightbooking-dashboard.onrender.com"
+])
 
 
 # Läs in konfigurationsdata

@@ -58,6 +58,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
     }
 
+
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
     balance_key = f"{pickup_country}-{delivery_country}"
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)

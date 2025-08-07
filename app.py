@@ -30,7 +30,10 @@ if not DATABASE_URL:
    raise ValueError("DATABASE_URL not set in environment variables")
 
 engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+from sqlalchemy.orm import scoped_session
+
+SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
+
 
 # 🏗️ Skapa tabeller om de inte redan finns
 Base.metadata.create_all(bind=engine)

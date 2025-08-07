@@ -134,7 +134,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "distance_km": distance_km,
         "transit_time_days": transit_time_days,
         "earliest_pickup_date": earliest_pickup_date,
-        "currency": "EUR"
+        "currency": "EUR",
         "co2_emissions_grams": co2_grams
     }
 

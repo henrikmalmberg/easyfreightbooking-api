@@ -2,7 +2,6 @@ services:
   - type: web
     name: easyfreightbooking-api
     env: python
+    runtime: python-3.11
     buildCommand: ""
-    startCommand: gunicorn app:app
-    runtime: python
-    pythonVersion: 3.11.9
+    startCommand: "gunicorn app:app"

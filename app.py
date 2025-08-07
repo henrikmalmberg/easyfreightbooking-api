@@ -47,16 +47,20 @@ def is_zone_allowed(country, postal_prefix, available_zones):
 def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight, mode_name=None):
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and
             is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
-        return {"status": "Not available for this request"}
+    return {
+        "available": False,
+        "status": "Not available for this request"
+    }
     
     min_allowed = mode_config.get("min_allowed_weight_kg", 0)
     max_allowed = mode_config.get("max_allowed_weight_kg", 999999)
 
     if weight < min_allowed or weight > max_allowed:
-        return {
-            "status": "Weight not allowed",
-            "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
-        }
+    return {
+        "available": False,
+        "status": "Weight not allowed",
+        "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
+    }
 
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
@@ -100,8 +104,10 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     elif breakpoint < weight <= maxweight:
         total_price = ftl_price
     else:
-        return {"status": "Weight exceeds max weight"}
-
+    return {
+        "available": False,
+        "status": "Weight exceeds max weight"
+    }
     # ⏱ Transit time från konfig
     speed = mode_config.get("transit_speed_kmpd", 500)
     base_transit = max(1, round(distance_km / speed))
@@ -138,6 +144,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0)*1000)
 
     return {
+        "available": True,
         "status": "success",
         "total_price_eur": total_price,
         "ftl_price_eur": ftl_price,

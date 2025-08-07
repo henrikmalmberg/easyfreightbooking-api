@@ -48,6 +48,15 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and
             is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
         return {"status": "Not available for this request"}
+    
+    min_allowed = mode_config.get("min_allowed_weight_kg", 0)
+    max_allowed = mode_config.get("max_allowed_weight_kg", 999999)
+
+    if weight < min_allowed or weight > max_allowed:
+    return {
+        "status": "Weight not allowed",
+        "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
+    }
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
     balance_key = f"{pickup_country}-{delivery_country}"

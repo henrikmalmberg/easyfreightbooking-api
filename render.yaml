@@ -3,5 +3,5 @@ services:
     name: easyfreightbooking-api
     env: python
     runtime: python3.10
-    buildCommand: ""
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app"

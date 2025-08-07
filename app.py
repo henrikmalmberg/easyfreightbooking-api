@@ -123,6 +123,9 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
 
     pickup_date += timedelta(days=mode_config.get("extra_pickup_days", 0))
     earliest_pickup_date = pickup_date.isoformat()
+    
+    # CO₂-utsläpp (gram)
+    co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0))
 
     return {
         "status": "success",
@@ -132,6 +135,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "transit_time_days": transit_time_days,
         "earliest_pickup_date": earliest_pickup_date,
         "currency": "EUR"
+        "co2_emissions_grams": co2_grams,
     }
 
 @app.route("/calculate", methods=["POST"])

@@ -2,6 +2,7 @@
   "road_freight": {
     "label": "Road Freight",
     "km_price_eur": 1.2,
+    "co2_per_ton_km": 0,045,
     "max_weight_kg": 25160,
     "default_breakpoint": 20000,
     "p1": 30,
@@ -108,6 +109,7 @@
   "intermodal_rail": {
     "label": "Intermodal Rail",
     "km_price_eur": 1.1,
+    "co2_per_ton_km": 0,024,
     "max_weight_kg": 24500,
     "default_breakpoint": 18000,
     "p1": 50,
@@ -133,6 +135,7 @@
   "conventional_rail": {
     "label": "Conventional Rail",
     "km_price_eur": 0.9,
+    "co2_per_ton_km": 0,01,
     "max_weight_kg": 60000,
     "default_breakpoint": 17000,
     "p1": 60,
@@ -158,6 +161,7 @@
   "ocean_freight": {
     "label": "Ocean Freight",
     "km_price_eur": 0.6,
+    "co2_per_ton_km": 0,007,
     "max_weight_kg": 27000,
     "default_breakpoint": 22000,
     "p1": 70,
@@ -183,6 +187,7 @@
   "express_road": {
     "label": "Express Road Freight",
     "km_price_eur": 1.8,
+    "co2_per_ton_km": 0,050,
     "max_weight_kg": 25160,
     "default_breakpoint": 12000,
     "p1": 25,

@@ -135,7 +135,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     earliest_pickup_date = pickup_date.isoformat()
     
     # CO₂-utsläpp (gram)
-    co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0))
+    co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0)*1000)
 
     return {
         "status": "success",

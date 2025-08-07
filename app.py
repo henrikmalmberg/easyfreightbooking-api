@@ -104,10 +104,10 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     elif breakpoint < weight <= maxweight:
         total_price = ftl_price
     else:
-    return {
-        "available": False,
-        "status": "Weight exceeds max weight"
-    }
+        return {
+            "available": False,
+            "status": "Weight exceeds max weight"
+        }
     # ⏱ Transit time från konfig
     speed = mode_config.get("transit_speed_kmpd", 500)
     base_transit = max(1, round(distance_km / speed))

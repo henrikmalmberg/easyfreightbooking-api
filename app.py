@@ -7,7 +7,6 @@ import holidays
 import json
 
 app = Flask(__name__)
-
 CORS(app, origins=[
     "https://easyfreightbooking.com",
     "https://easyfreightbooking-dashboard.onrender.com",
@@ -55,7 +54,6 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
     ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
 
-    # Prislogik
     p1 = mode_config["p1"]
     price_p1 = mode_config["price_p1"]
     p2 = mode_config["p2"]
@@ -94,12 +92,12 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     else:
         return {"status": "Weight exceeds max weight"}
 
-    # 🚛 Transit time (styrd från config)
-    speed_kmph = mode_config.get("transit_speed_kmph", 500)
-    base_transit = max(1, round(distance_km / speed_kmph))
+    # ⏱ Transit time från konfig
+    speed = mode_config.get("transit_speed_kmph", 500)
+    base_transit = max(1, round(distance_km / speed))
     transit_time_days = [base_transit, base_transit + 1]
 
-    # 📅 Earliest pickup date
+    # 📆 Earliest pickup
     try:
         now_utc = datetime.utcnow()
         tz_name = pytz.country_timezones[pickup_country.lower()][0]
@@ -123,10 +121,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         if pickup_date.weekday() < 5 and pickup_date not in country_holidays:
             added_days += 1
 
-    # Lägg till extra dagar enligt konfig
-    extra_days = mode_config.get("extra_pickup_days", 0)
-    pickup_date += timedelta(days=extra_days)
-
+    pickup_date += timedelta(days=mode_config.get("extra_pickup_days", 0))
     earliest_pickup_date = pickup_date.isoformat()
 
     return {
@@ -155,20 +150,17 @@ def calculate():
 
     results = {}
     for mode in config:
-        if mode in config:
-            results[mode] = calculate_for_mode(
-                config[mode],
-                pickup_coord,
-                delivery_coord,
-                pickup_country,
-                pickup_postal,
-                delivery_country,
-                delivery_postal,
-                weight,
-                mode_name=mode
-            )
-        else:
-            results[mode] = {"status": "Not available for this request"}
+        results[mode] = calculate_for_mode(
+            config[mode],
+            pickup_coord,
+            delivery_coord,
+            pickup_country,
+            pickup_postal,
+            delivery_country,
+            delivery_postal,
+            weight,
+            mode_name=mode
+        )
 
     return jsonify(results)
 

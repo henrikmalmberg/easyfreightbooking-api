@@ -12,7 +12,7 @@
     "p3": 1850,
     "p3k": 0.12,
     "p3m": 120,
-    "transit_speed_kmph": 500,
+    "transit_speed_kmpd": 500,
     "cutoff_hour": 10,
     "extra_pickup_days": 0,
     "available_zones": {
@@ -118,7 +118,7 @@
     "p3": 2000,
     "p3k": 0.11,
     "p3m": 90,
-    "transit_speed_kmph": 400,
+    "transit_speed_kmpd": 400,
     "cutoff_hour": 10,
     "extra_pickup_days": 0,
     "available_zones": {
@@ -143,7 +143,7 @@
     "p3": 2200,
     "p3k": 0.1,
     "p3m": 100,
-    "transit_speed_kmph": 350,
+    "transit_speed_kmpd": 350,
     "cutoff_hour": 10,
     "extra_pickup_days": 1,
     "available_zones": {
@@ -168,7 +168,7 @@
     "p3": 2500,
     "p3k": 0.09,
     "p3m": 110,
-    "transit_speed_kmph": 250,
+    "transit_speed_kmpd": 250,
     "cutoff_hour": 10,
     "extra_pickup_days": 1,
     "available_zones": {
@@ -193,7 +193,7 @@
     "p3": 1500,
     "p3k": 0.18,
     "p3m": 160,
-    "transit_speed_kmph": 800,
+    "transit_speed_kmpd": 800,
     "cutoff_hour": 14,
     "extra_pickup_days": 0,
     "available_zones": {

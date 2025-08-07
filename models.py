@@ -10,6 +10,18 @@ Base = declarative_base()
 def generate_uuid():
     return str(uuid.uuid4())
 
+from models import Address
+from sqlalchemy.exc import SQLAlchemyError
+
+@app.route("/test-db", methods=["GET"])
+def test_db():
+    try:
+        session = SessionLocal()
+        count = session.query(Address).count()
+        session.close()
+        return jsonify({"status": "success", "address_count": count})
+    except SQLAlchemyError as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 class Address(Base):
     __tablename__ = "addresses"

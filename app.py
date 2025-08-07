@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 import pytz
 import holidays
 import json
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from models import Base
-import os
+# from sqlalchemy import create_engine
+# from sqlalchemy.orm import sessionmaker
+# from models import Base
+# import os
 
 
 app = Flask(__name__)
@@ -24,16 +24,16 @@ with open("config.json", "r") as f:
 
 
 # 🔌 Skapa databasanslutning
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# DATABASE_URL = os.environ.get("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
+# if not DATABASE_URL:
+#    raise ValueError("DATABASE_URL not set in environment variables")
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+# engine = create_engine(DATABASE_URL)
+#SessionLocal = sessionmaker(bind=engine)
 
 # 🏗️ Skapa tabeller om de inte redan finns
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 
 

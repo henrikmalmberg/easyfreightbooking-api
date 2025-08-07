@@ -1,8 +1,3 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from models import Base  # Importera dina modeller
-import os
-
 from flask_cors import CORS
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log
@@ -22,17 +17,6 @@ CORS(app, origins=[
 with open("config.json", "r") as f:
     config = json.load(f)
 
-# 🔌 Skapa databasanslutning
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set in environment variables")
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-
-# 🏗️ Skapa tabeller om de inte redan finns
-Base.metadata.create_all(bind=engine)
 
 
 

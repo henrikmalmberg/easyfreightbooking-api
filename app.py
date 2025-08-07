@@ -56,11 +56,11 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     max_allowed = mode_config.get("max_allowed_weight_kg", 999999)
 
     if weight < min_allowed or weight > max_allowed:
-    return {
-        "available": False,
-        "status": "Weight not allowed",
-        "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
-    }
+        return {
+            "available": False,
+            "status": "Weight not allowed",
+            "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
+        }
 
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)

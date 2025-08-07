@@ -33,7 +33,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
 # 🏗️ Skapa tabeller om de inte redan finns
- Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)
 
 
 

@@ -2,6 +2,6 @@ services:
   - type: web
     name: easyfreightbooking-api
     env: python
-    runtime: python3.10
+    runtime: python
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app"

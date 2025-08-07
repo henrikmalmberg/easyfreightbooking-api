@@ -1,3 +1,8 @@
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from models import Base  # Importera dina modeller
+import os
+
 from flask_cors import CORS
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log

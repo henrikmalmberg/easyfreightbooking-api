@@ -93,7 +93,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         return {"status": "Weight exceeds max weight"}
 
     # ⏱ Transit time från konfig
-    speed = mode_config.get("transit_speed_kmph", 500)
+    speed = mode_config.get("transit_speed_kmpd", 500)
     base_transit = max(1, round(distance_km / speed))
     transit_time_days = [base_transit, base_transit + 1]
 

@@ -5,3 +5,6 @@ services:
     runtime: python
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app"
+    envVars:
+      - key: postgresql://easyfreightbooking_db_user:qxKP8rAllVGAlXoAVeqHoA6sPjJfX5o8@dpg-d2a8bl15pdvs73aga4p0-a/easyfreightbooking_db
+        value: <din-render-postgres-url>

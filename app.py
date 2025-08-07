@@ -15,12 +15,6 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-
-
 app = Flask(__name__)
 CORS(app, origins=[
     "https://easyfreightbooking.com",
@@ -31,6 +25,20 @@ CORS(app, origins=[
 # Läs in konfigurationsdata
 with open("config.json", "r") as f:
     config = json.load(f)
+
+# 🔌 Skapa databasanslutning
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set in environment variables")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+
+# 🏗️ Skapa tabeller om de inte redan finns
+Base.metadata.create_all(bind=engine)
+
+
 
 def haversine(coord1, coord2):
     R = 6371

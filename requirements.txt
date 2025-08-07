@@ -3,3 +3,4 @@ gunicorn
 holidays
 pytz
 flask-cors
+sqlalchemy>=2.0

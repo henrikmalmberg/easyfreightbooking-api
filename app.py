@@ -14,7 +14,6 @@ CORS(app, origins=[
     "https://easyfreightbooking-dashboard.onrender.com/new-booking"
 ])
 
-
 # Läs in konfigurationsdata
 with open("config.json", "r") as f:
     config = json.load(f)
@@ -56,6 +55,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
     ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
 
+    # Prislogik
     p1 = mode_config["p1"]
     price_p1 = mode_config["price_p1"]
     p2 = mode_config["p2"]
@@ -94,9 +94,12 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     else:
         return {"status": "Weight exceeds max weight"}
 
-    base_transit = max(1, round(distance_km / 500))
+    # 🚛 Transit time (styrd från config)
+    speed_kmph = mode_config.get("transit_speed_kmph", 500)
+    base_transit = max(1, round(distance_km / speed_kmph))
     transit_time_days = [base_transit, base_transit + 1]
 
+    # 📅 Earliest pickup date
     try:
         now_utc = datetime.utcnow()
         tz_name = pytz.country_timezones[pickup_country.lower()][0]
@@ -104,7 +107,8 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     except:
         now_local = datetime.utcnow()
 
-    cutoff = now_local.replace(hour=10, minute=0, second=0, microsecond=0)
+    cutoff_hour = mode_config.get("cutoff_hour", 10)
+    cutoff = now_local.replace(hour=cutoff_hour, minute=0, second=0, microsecond=0)
     days_to_add = 1 if now_local < cutoff else 2
 
     try:
@@ -119,9 +123,9 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         if pickup_date.weekday() < 5 and pickup_date not in country_holidays:
             added_days += 1
 
-    # Extra dag för ocean_freight och conventional_rail
-    if mode_name in ["ocean_freight", "conventional_rail"]:
-        pickup_date += timedelta(days=1)
+    # Lägg till extra dagar enligt konfig
+    extra_days = mode_config.get("extra_pickup_days", 0)
+    pickup_date += timedelta(days=extra_days)
 
     earliest_pickup_date = pickup_date.isoformat()
 

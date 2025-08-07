@@ -11,10 +11,6 @@ import pytz
 import holidays
 import json
 
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
 app = Flask(__name__)
 CORS(app, origins=[
     "https://easyfreightbooking.com",

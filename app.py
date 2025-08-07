@@ -154,7 +154,7 @@ def calculate():
         return jsonify({"error": "Missing or invalid input"}), 400
 
     results = {}
-    for mode in ["road_freight", "intermodal_rail", "conventional_rail", "ocean_freight"]:
+    for mode in config:
         if mode in config:
             results[mode] = calculate_for_mode(
                 config[mode],

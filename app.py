@@ -221,43 +221,46 @@ INTERNAL_BOOKING_EMAIL = os.getenv("INTERNAL_BOOKING_EMAIL", "henrik.malmberg@be
 
 @app.post("/book")
 def book():
-    data = request.get_json(force=True)
-
-    # Bygg XML
-    xml_bytes = build_booking_xml(data)
-
-    # Bekräftelser till bokare + update_contact (om olika)
-    to_confirm = set()
     try:
+        data = request.get_json(force=True)
+
+        # 1) Bygg XML
+        xml_bytes = build_booking_xml(data)
+
+        # 2) Bekräftelser till bokare + update_contact (om olika)
+        to_confirm = set()
         if data.get("booker", {}).get("email"):
             to_confirm.add(data["booker"]["email"])
         uc_email = (data.get("update_contact") or {}).get("email")
         if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
             to_confirm.add(uc_email)
-    except Exception:
-        pass
 
-    subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
-    body_conf = render_text_confirmation(data)
-    for rcpt in to_confirm:
+        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
+        body_conf = render_text_confirmation(data)
+        for rcpt in to_confirm:
+            send_email(
+                to=rcpt,
+                subject=subject_conf,
+                body=body_conf,
+                attachments=[]
+            )
+
+        # 3) Internt bokningsmejl med XML
+        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
+        body_internal = render_text_internal(data)
         send_email(
-            to=rcpt,
-            subject=subject_conf,
-            body=body_conf,
-            attachments=[]
+            to=INTERNAL_BOOKING_EMAIL,
+            subject=subject_internal,
+            body=body_internal,
+            attachments=[("booking.xml", "application/xml", xml_bytes)]
         )
 
-    # Internt bokningsmejl med XML
-    subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
-    body_internal = render_text_internal(data)
-    send_email(
-        to=INTERNAL_BOOKING_EMAIL,
-        subject=subject_internal,
-        body=body_internal,
-        attachments=[("booking.xml", "application/xml", xml_bytes)]
-    )
+        return jsonify({"ok": True})
 
-    return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.exception("BOOK failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
 # ---------- E-post & XML-hjälpare ----------

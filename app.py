@@ -295,25 +295,25 @@ def book():
             db.add(sender); db.add(receiver)
             db.flush()  # får id:n
 
-# skapa booking
-b = Booking(
-    user_id=user_id,
-    selected_mode=data.get("selected_mode"),
-    price_eur=float(data.get("price_eur") or 0.0),
-    pickup_date=None,  # keep None unless you plan to store a datetime here
-    transit_time_days=str(data.get("transit_time_days") or ""),
-    co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
-    sender_address_id=sender.id,
-    receiver_address_id=receiver.id,
-    goods=data.get("goods"),
-    references=data.get("references"),
-    addons=data.get("addons"),
-    # NEW scheduling fields (safe defaults + safe parsing)
-    asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
-    requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
-    asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
-    requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-)
+        # skapa booking
+        b = Booking(
+            user_id=user_id,
+            selected_mode=data.get("selected_mode"),
+            price_eur=float(data.get("price_eur") or 0.0),
+            pickup_date=None,  # keep None unless you plan to store a datetime here
+            transit_time_days=str(data.get("transit_time_days") or ""),
+            co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
+            sender_address_id=sender.id,
+            receiver_address_id=receiver.id,
+            goods=data.get("goods"),
+            references=data.get("references"),
+            addons=data.get("addons"),
+            # NEW scheduling fields (safe defaults + safe parsing)
+            asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
+            requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
+            asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
+            requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+        )
 
             db.add(b)
             db.commit()

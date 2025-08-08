@@ -333,7 +333,9 @@ def build_booking_xml(d: dict) -> bytes:
         zipcode = src.get("postal", "")
         ET.SubElement(loc, "zipcode").text = f"{src.get('country','')}-{zipcode}"
         if loc_type == 1:
-            ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(d.get("earliest_pickup"))
+            chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
+            ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
+
 
     goods_specs = ET.SubElement(booking, "goodsSpecifications")
     for g in d.get("goods") or []:
@@ -379,13 +381,16 @@ def format_transit(tt):
 def render_text_confirmation(d: dict) -> str:
     p, q = d.get("pickup", {}), d.get("delivery", {})
     uc = d.get("update_contact", {}) or {}
+    requested = d.get("requested_pickup_date")
+    asap = d.get("asap_pickup")
     lines = [
         "Thank you for your booking with Easy Freight Booking.",
         "",
         f"Route: {p.get('country','')} {p.get('postal','')} {p.get('city','')} → {q.get('country','')} {q.get('postal','')} {q.get('city','')}",
         f"Mode: {d.get('selected_mode','')}",
         f"Price: {d.get('price_eur','')} EUR excl. VAT",
-        f"Earliest pickup: {d.get('earliest_pickup','')}",
+        f"Earliest pickup (offer): {d.get('earliest_pickup','')}",
+        f"Requested pickup: {'ASAP' if asap else (requested or '—')}",
         f"Transit time: {format_transit(d.get('transit_time_days'))}",
         "",
         f"Update contact: {uc.get('name','')} <{uc.get('email','')}> {uc.get('phone','')}",
@@ -398,6 +403,8 @@ def render_text_internal(d: dict) -> str:
     p, q = d.get("pickup", {}), d.get("delivery", {})
     b = d.get("booker", {}) or {}
     uc = d.get("update_contact", {}) or {}
+    requested = d.get("requested_pickup_date")
+    asap = d.get("asap_pickup")
     lines = [
         "NEW BOOKING",
         f"Booker: {b.get('name','')} <{b.get('email','')}> {b.get('phone','')}",
@@ -406,7 +413,8 @@ def render_text_internal(d: dict) -> str:
         f"Route: {p.get('country','')} {p.get('postal','')} {p.get('city','')} → {q.get('country','')} {q.get('postal','')} {q.get('city','')}",
         f"Mode: {d.get('selected_mode','')}",
         f"Price: {d.get('price_eur','')} EUR excl. VAT",
-        f"Earliest pickup: {d.get('earliest_pickup','')}",
+        f"Earliest pickup (offer): {d.get('earliest_pickup','')}",
+        f"Requested pickup: {'ASAP' if asap else (requested or '—')}",
         f"Transit time: {format_transit(d.get('transit_time_days'))}",
         f"Chargeable weight: {int(round(d.get('chargeable_weight',0)))} kg",
         "",

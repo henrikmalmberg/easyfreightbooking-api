@@ -253,41 +253,6 @@ def book():
         xml_bytes = build_booking_xml(data)
         app.logger.info("XML built, %d bytes", len(xml_bytes))
 
-        # 2) Bekräftelser till bokare + update_contact (om olika)
-        to_confirm = set()
-        if data.get("booker", {}).get("email"):
-            to_confirm.add(data["booker"]["email"])
-        uc_email = (data.get("update_contact") or {}).get("email")
-        if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
-            to_confirm.add(uc_email)
-
-        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
-        body_conf = render_text_confirmation(data)
-
-        if EMAIL_ENABLED:
-            for rcpt in to_confirm:
-                app.logger.info("Sending confirmation to %s", rcpt)
-                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
-        else:
-            app.logger.info("EMAIL_DISABLED: skipping confirmations to %s", list(to_confirm))
-
-        # 3) Internt bokningsmejl med XML
-        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
-        body_internal = render_text_internal(data)
-
-        if EMAIL_ENABLED:
-            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
-            send_email(
-                to=INTERNAL_BOOKING_EMAIL,
-                subject=subject_internal,
-                body=body_internal,
-                attachments=[("booking.xml", "application/xml", xml_bytes)]
-            )
-        else:
-            app.logger.info("EMAIL_DISABLED: skipping internal email to %s", INTERNAL_BOOKING_EMAIL)
-
-        
-        
             # 4) Spara i DB (Address + Booking)
         user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or "1"
 
@@ -344,6 +309,43 @@ def book():
             raise
         finally:
             db.close()
+        
+        # 2) Bekräftelser till bokare + update_contact (om olika)
+        to_confirm = set()
+        if data.get("booker", {}).get("email"):
+            to_confirm.add(data["booker"]["email"])
+        uc_email = (data.get("update_contact") or {}).get("email")
+        if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
+            to_confirm.add(uc_email)
+
+        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
+        body_conf = render_text_confirmation(data)
+
+        if EMAIL_ENABLED:
+            for rcpt in to_confirm:
+                app.logger.info("Sending confirmation to %s", rcpt)
+                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
+        else:
+            app.logger.info("EMAIL_DISABLED: skipping confirmations to %s", list(to_confirm))
+
+        # 3) Internt bokningsmejl med XML
+        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
+        body_internal = render_text_internal(data)
+
+        if EMAIL_ENABLED:
+            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
+            send_email(
+                to=INTERNAL_BOOKING_EMAIL,
+                subject=subject_internal,
+                body=body_internal,
+                attachments=[("booking.xml", "application/xml", xml_bytes)]
+            )
+        else:
+            app.logger.info("EMAIL_DISABLED: skipping internal email to %s", INTERNAL_BOOKING_EMAIL)
+
+        
+        
+
 
         return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, "booking_id": booking_id})
     

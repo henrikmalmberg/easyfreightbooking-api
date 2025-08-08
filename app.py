@@ -52,6 +52,62 @@ def haversine(coord1, coord2):
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return R * c
 
+# --- helpers ---
+def address_to_dict(a):
+    if not a:
+        return None
+    return {
+        "id": a.id,
+        "business_name": a.business_name,
+        "address": a.address,
+        "postal_code": a.postal_code,
+        "city": a.city,
+        "country_code": a.country_code,
+        "contact_name": a.contact_name,
+        "phone": a.phone,
+        "email": a.email,
+        "opening_hours": a.opening_hours,
+        "instructions": a.instructions,
+    }
+
+def booking_to_dict(b):
+    return {
+        "id": b.id,
+        "user_id": b.user_id,
+        "selected_mode": b.selected_mode,
+        "price_eur": b.price_eur,
+        "pickup_date": b.pickup_date.isoformat() if b.pickup_date else None,
+        "transit_time_days": b.transit_time_days,
+        "co2_emissions": b.co2_emissions,
+        "goods": b.goods,
+        "references": b.references,
+        "addons": b.addons,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "sender_address": address_to_dict(b.sender_address),
+        "receiver_address": address_to_dict(b.receiver_address),
+    }
+
+@app.get("/bookings")
+def list_bookings():
+    user_id = request.args.get("user_id") or "1"
+    limit = min(int(request.args.get("limit", 50)), 200)
+    offset = int(request.args.get("offset", 0))
+
+    db = SessionLocal()
+    try:
+        q = (
+            db.query(Booking)
+            .filter(Booking.user_id == user_id)
+            .order_by(Booking.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = q.all()
+        return jsonify([booking_to_dict(b) for b in rows])
+    finally:
+        db.close()
+
+
 def is_zone_allowed(country, postal_prefix, available_zones):
     if country not in available_zones:
         return False

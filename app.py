@@ -7,7 +7,6 @@ import holidays
 import json
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models import Base
 from models import Base, Address, Booking
 from sqlalchemy.orm import scoped_session
 
@@ -267,7 +266,7 @@ def book():
                 price_eur=float(data.get("price_eur") or 0),
                 pickup_date=None,  # kan sätta om du vill spara som DateTime
                 transit_time_days=str(data.get("transit_time_days") or ""),
-                co2_emissions=float(data.get("co2_emissions_grams") or 0),
+                co2_emissions=float(data.get("co2_emissions_grams") or 0)/1000,
                 sender_address_id=sender.id,
                 receiver_address_id=receiver.id,
                 goods=data.get("goods"),
@@ -285,8 +284,6 @@ def book():
 
         return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, "booking_id": booking_id})
     
-        return jsonify({"ok": True})
-
     except Exception as e:
         app.logger.exception("BOOK failed")
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -425,3 +422,7 @@ def render_text_internal(d: dict) -> str:
 # ---------- Main ----------
 if __name__ == "__main__":
     app.run(debug=True)
+
+@app.teardown_appcontext
+def remove_session(exception=None):
+    SessionLocal.remove()

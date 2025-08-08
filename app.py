@@ -8,6 +8,9 @@ import json
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from models import Base
+from models import Base, Address, Booking
+from sqlalchemy.orm import scoped_session
+
 import os
 
 # ---- Nytt: e-post & XML ----
@@ -228,6 +231,60 @@ def book():
         else:
             app.logger.info("EMAIL_DISABLED: skipping internal email to %s", INTERNAL_BOOKING_EMAIL)
 
+        
+        
+            # 4) Spara i DB (Address + Booking)
+        user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or "1"
+
+        def mk_addr(src: dict, addr_type: str) -> Address:
+            return Address(
+                user_id=user_id,
+                type=addr_type,  # "sender" / "receiver"
+                business_name=src.get("business_name"),
+                address=src.get("address"),
+                postal_code=src.get("postal"),
+                city=src.get("city"),
+                country_code=src.get("country"),
+                contact_name=src.get("contact_name"),
+                phone=src.get("phone"),
+                email=src.get("email"),
+                opening_hours=src.get("opening_hours"),
+                instructions=src.get("instructions"),
+            )
+
+        db = SessionLocal()
+        try:
+            # skapa adresser
+            sender = mk_addr(data.get("pickup", {}) or {}, "sender")
+            receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
+            db.add(sender); db.add(receiver)
+            db.flush()  # får id:n
+
+            # skapa booking
+            b = Booking(
+                user_id=user_id,
+                selected_mode=data.get("selected_mode"),
+                price_eur=float(data.get("price_eur") or 0),
+                pickup_date=None,  # kan sätta om du vill spara som DateTime
+                transit_time_days=str(data.get("transit_time_days") or ""),
+                co2_emissions=float(data.get("co2_emissions_grams") or 0),
+                sender_address_id=sender.id,
+                receiver_address_id=receiver.id,
+                goods=data.get("goods"),
+                references=data.get("references"),
+                addons=data.get("addons"),
+            )
+            db.add(b)
+            db.commit()
+            booking_id = b.id
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, "booking_id": booking_id})
+    
         return jsonify({"ok": True})
 
     except Exception as e:

@@ -4,7 +4,6 @@ from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 import uuid
-
 from sqlalchemy import Boolean, Date
 
 asap_pickup = Column(Boolean, default=True)
@@ -58,6 +57,11 @@ class Booking(Base):
     pickup_date = Column(DateTime)
     transit_time_days = Column(String)
     co2_emissions = Column(Float)
+
+    asap_pickup = Column(Boolean, nullable=True)
+    requested_pickup_date = Column(Date, nullable=True)
+    asap_delivery = Column(Boolean, nullable=True)
+    requested_delivery_date = Column(Date, nullable=True)
 
     sender_address_id = Column(String, ForeignKey("addresses.id"))
     receiver_address_id = Column(String, ForeignKey("addresses.id"))

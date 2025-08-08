@@ -1,7 +1,7 @@
 # models.py
 
 from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Text, JSON
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 import uuid
 
@@ -10,41 +10,35 @@ Base = declarative_base()
 def generate_uuid():
     return str(uuid.uuid4())
 
-from models import Address
-from sqlalchemy.exc import SQLAlchemyError
-
-@app.route("/test-db", methods=["GET"])
-def test_db():
-    try:
-        session = SessionLocal()
-        count = session.query(Address).count()
-        session.close()
-        return jsonify({"status": "success", "address_count": count})
-    except SQLAlchemyError as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 class Address(Base):
     __tablename__ = "addresses"
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, nullable=False)
     type = Column(String, nullable=False)  # "sender" or "receiver"
-    
+
     business_name = Column(String(100))
     address = Column(String(200))
     postal_code = Column(String(20))
     city = Column(String(100))
     country_code = Column(String(2))
-    
+
     contact_name = Column(String(100))
     phone = Column(String(50))
     email = Column(String(100))
-    
+
     opening_hours = Column(String(200))
     instructions = Column(Text)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Om du vill kunna navigera från Address -> Booking (frivilligt):
+    bookings_as_sender = relationship(
+        "Booking", foreign_keys="Booking.sender_address_id", back_populates="sender_address"
+    )
+    bookings_as_receiver = relationship(
+        "Booking", foreign_keys="Booking.receiver_address_id", back_populates="receiver_address"
+    )
 
 class Booking(Base):
     __tablename__ = "bookings"
@@ -67,6 +61,9 @@ class Booking(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Relationer tillbaka till Address (frivilligt men trevligt)
+    sender_address = relationship("Address", foreign_keys=[sender_address_id], back_populates="bookings_as_sender")
+    receiver_address = relationship("Address", foreign_keys=[receiver_address_id], back_populates="bookings_as_receiver")
 
 class SearchLog(Base):
     __tablename__ = "search_logs"

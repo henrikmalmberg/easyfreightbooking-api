@@ -328,6 +328,13 @@ def book():
                 goods=data.get("goods"),
                 references=data.get("references"),
                 addons=data.get("addons"),
+                asap_pickup=data.get("asap_pickup"),
+                requested_pickup_date=(datetime.strptime(data["requested_pickup_date"], "%Y-%m-%d").date()
+                       if data.get("requested_pickup_date") else None),
+                asap_delivery=data.get("asap_delivery"),
+                requested_delivery_date=(datetime.strptime(data["requested_delivery_date"], "%Y-%m-%d").date()
+                         if data.get("requested_delivery_date") else None),
+
             )
             db.add(b)
             db.commit()

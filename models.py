@@ -5,6 +5,13 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 import uuid
 
+from sqlalchemy import Boolean, Date
+
+asap_pickup = Column(Boolean, default=True)
+requested_pickup_date = Column(Date, nullable=True)
+asap_delivery = Column(Boolean, default=True)
+requested_delivery_date = Column(Date, nullable=True)
+
 Base = declarative_base()
 
 def generate_uuid():

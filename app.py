@@ -70,50 +70,31 @@ def is_zone_allowed(country, postal_prefix, available_zones):
 def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight, mode_name=None):
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and
             is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
-        return {
-            "available": False,
-            "status": "Not available for this request"
-        }
+        return {"available": False, "status": "Not available for this request"}
 
     min_allowed = mode_config.get("min_allowed_weight_kg", 0)
     max_allowed = mode_config.get("max_allowed_weight_kg", 999999)
-
     if weight < min_allowed or weight > max_allowed:
-        return {
-            "available": False,
-            "status": "Weight not allowed",
-            "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"
-        }
+        return {"available": False, "status": "Weight not allowed", "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"}
 
     distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
     balance_key = f"{pickup_country}-{delivery_country}"
     balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
     ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
 
-    p1 = mode_config["p1"]
-    price_p1 = mode_config["price_p1"]
-    p2 = mode_config["p2"]
-    p2k = mode_config["p2k"]
-    p2m = mode_config["p2m"]
-    p3 = mode_config["p3"]
-    p3k = mode_config["p3k"]
-    p3m = mode_config["p3m"]
-    breakpoint = mode_config["default_breakpoint"]
-    maxweight = mode_config["max_weight_kg"]
+    p1 = mode_config["p1"]; price_p1 = mode_config["price_p1"]
+    p2 = mode_config["p2"]; p2k = mode_config["p2k"]; p2m = mode_config["p2m"]
+    p3 = mode_config["p3"]; p3k = mode_config["p3k"]; p3m = mode_config["p3m"]
+    breakpoint = mode_config["default_breakpoint"]; maxweight = mode_config["max_weight_kg"]
 
     y1 = price_p1 / p1
     y2 = (p2k * ftl_price + p2m) / p2
     y3 = (p3k * ftl_price + p3m) / p3
     y4 = ftl_price / breakpoint
 
-    n1 = (log(y2) - log(y1)) / (log(p2) - log(p1))
-    a1 = y1 / (p1 ** n1)
-
-    n2 = (log(y3) - log(y2)) / (log(p3) - log(p2))
-    a2 = y2 / (p2 ** n2)
-
-    n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3))
-    a3 = y3 / (p3 ** n3)
+    n1 = (log(y2) - log(y1)) / (log(p2) - log(p1)); a1 = y1 / (p1 ** n1)
+    n2 = (log(y3) - log(y2)) / (log(p3) - log(p2)); a2 = y2 / (p2 ** n2)
+    n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3)); a3 = y3 / (p3 ** n3)
 
     if weight < p1:
         total_price = round(ftl_price * weight / maxweight)
@@ -126,12 +107,9 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     elif breakpoint < weight <= maxweight:
         total_price = ftl_price
     else:
-        return {
-            "available": False,
-            "status": "Weight exceeds max weight"
-        }
+        return {"available": False, "status": "Weight exceeds max weight"}
 
-    # ⏱ Transit time från konfig
+    # ⏱ Transit time
     speed = mode_config.get("transit_speed_kmpd", 500)
     base_transit = max(1, round(distance_km / speed))
     transit_time_days = [base_transit, base_transit + 1]
@@ -163,20 +141,14 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     pickup_date += timedelta(days=mode_config.get("extra_pickup_days", 0))
     earliest_pickup_date = pickup_date.isoformat()
 
-    # CO₂-utsläpp (gram)
     co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0) * 1000)
 
     return {
-        "available": True,
-        "status": "success",
-        "total_price_eur": total_price,
-        "ftl_price_eur": ftl_price,
-        "distance_km": distance_km,
-        "transit_time_days": transit_time_days,
-        "earliest_pickup_date": earliest_pickup_date,
-        "currency": "EUR",
-        "co2_emissions_grams": co2_grams,
-        "description": mode_config.get("description", "")
+        "available": True, "status": "success",
+        "total_price_eur": total_price, "ftl_price_eur": ftl_price,
+        "distance_km": distance_km, "transit_time_days": transit_time_days,
+        "earliest_pickup_date": earliest_pickup_date, "currency": "EUR",
+        "co2_emissions_grams": co2_grams, "description": mode_config.get("description", "")
     }
 
 # ---------- Pris-endpoint ----------
@@ -197,17 +169,10 @@ def calculate():
     results = {}
     for mode in config:
         results[mode] = calculate_for_mode(
-            config[mode],
-            pickup_coord,
-            delivery_coord,
-            pickup_country,
-            pickup_postal,
-            delivery_country,
-            delivery_postal,
-            weight,
-            mode_name=mode
+            config[mode], pickup_coord, delivery_coord,
+            pickup_country, pickup_postal, delivery_country, delivery_postal,
+            weight, mode_name=mode
         )
-
     return jsonify(results)
 
 
@@ -218,14 +183,17 @@ SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "no-reply@easyfreightbooking.com")
 INTERNAL_BOOKING_EMAIL = os.getenv("INTERNAL_BOOKING_EMAIL", "henrik.malmberg@begoma.se")
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"   # <— NYTT
 
 @app.post("/book")
 def book():
     try:
         data = request.get_json(force=True)
+        app.logger.info("BOOK payload received")
 
         # 1) Bygg XML
         xml_bytes = build_booking_xml(data)
+        app.logger.info("XML built, %d bytes", len(xml_bytes))
 
         # 2) Bekräftelser till bokare + update_contact (om olika)
         to_confirm = set()
@@ -237,30 +205,34 @@ def book():
 
         subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
         body_conf = render_text_confirmation(data)
-        for rcpt in to_confirm:
-            send_email(
-                to=rcpt,
-                subject=subject_conf,
-                body=body_conf,
-                attachments=[]
-            )
+
+        if EMAIL_ENABLED:
+            for rcpt in to_confirm:
+                app.logger.info("Sending confirmation to %s", rcpt)
+                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
+        else:
+            app.logger.info("EMAIL_DISABLED: skipping confirmations to %s", list(to_confirm))
 
         # 3) Internt bokningsmejl med XML
         subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
         body_internal = render_text_internal(data)
-        send_email(
-            to=INTERNAL_BOOKING_EMAIL,
-            subject=subject_internal,
-            body=body_internal,
-            attachments=[("booking.xml", "application/xml", xml_bytes)]
-        )
+
+        if EMAIL_ENABLED:
+            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
+            send_email(
+                to=INTERNAL_BOOKING_EMAIL,
+                subject=subject_internal,
+                body=body_internal,
+                attachments=[("booking.xml", "application/xml", xml_bytes)]
+            )
+        else:
+            app.logger.info("EMAIL_DISABLED: skipping internal email to %s", INTERNAL_BOOKING_EMAIL)
 
         return jsonify({"ok": True})
 
     except Exception as e:
         app.logger.exception("BOOK failed")
         return jsonify({"ok": False, "error": str(e)}), 500
-
 
 
 # ---------- E-post & XML-hjälpare ----------
@@ -274,7 +246,7 @@ def send_email(to: str, subject: str, body: str, attachments: list[tuple[str, st
     msg["Subject"] = subject
     msg.set_content(body)
 
-    for filename, mime, content in attachments or []:
+    for filename, mime, content in (attachments or []):
         maintype, subtype = mime.split("/")
         msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
 
@@ -293,17 +265,11 @@ def build_booking_xml(d: dict) -> bytes:
 
     root = ET.Element("CreateBooking")
     booking = ET.SubElement(root, "booking")
-
     ET.SubElement(booking, "customerBookingId").text = safe_ref(d)
-    # Om du har kundkort-id kan du lägga till:
-    # ET.SubElement(booking, "customerCardId").text = d.get("customer_card_id","")
 
     # Locations: 1 = pickup, 2 = delivery
     locs = ET.SubElement(booking, "locations")
-    for loc_type, src in [
-        (1, d.get("pickup", {})),
-        (2, d.get("delivery", {})),
-    ]:
+    for loc_type, src in [(1, d.get("pickup", {})), (2, d.get("delivery", {}))]:
         loc = ET.SubElement(locs, "location")
         ET.SubElement(loc, "locationType").text = str(loc_type)
         ET.SubElement(loc, "locationName").text = src.get("business_name", "")
@@ -315,7 +281,6 @@ def build_booking_xml(d: dict) -> bytes:
         if loc_type == 1:
             ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(d.get("earliest_pickup"))
 
-    # Goods
     goods_specs = ET.SubElement(booking, "goodsSpecifications")
     for g in d.get("goods") or []:
         row = ET.SubElement(goods_specs, "goodsSpecification")
@@ -332,7 +297,6 @@ def build_booking_xml(d: dict) -> bytes:
         ET.SubElement(row, "goodsWeight").text = str(g.get("weight", ""))
         ET.SubElement(row, "goodsChgWeight").text = str(int(round(d.get("chargeable_weight", 0))))
 
-    # References
     refs_node = ET.SubElement(booking, "references")
     refs = d.get("references") or {}
     ET.SubElement(refs_node, "loadingReference").text = refs.get("reference1", "")
@@ -342,13 +306,11 @@ def build_booking_xml(d: dict) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 def safe_ref(d: dict) -> str:
-    p = d.get("pickup", {})
-    q = d.get("delivery", {})
+    p = d.get("pickup", {}); q = d.get("delivery", {})
     ref = f"{p.get('country','')}{p.get('postal','')}→{q.get('country','')}{q.get('postal','')} {d.get('earliest_pickup','')}"
     return ref.strip()
 
 def to_utc_iso(date_str: str | None) -> str:
-    # Input "YYYY-MM-DD" -> "YYYY-MM-DDT09:00:00Z" (default 09:00 UTC)
     try:
         dt_local = datetime.strptime(date_str, "%Y-%m-%d")
     except Exception:

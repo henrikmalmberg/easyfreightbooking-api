@@ -369,9 +369,9 @@ def book():
 
 
     
-        except Exception as e:
+    except Exception as e:
         app.logger.exception("BOOK failed")
-        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------- E-post & XML-hjälpare ----------

@@ -114,14 +114,15 @@ def list_bookings():
     db = SessionLocal()
     try:
         q = db.query(Booking).order_by(Booking.created_at.desc())
-        if org_id:
+        if org_id and str(org_id).isdigit():
             q = q.filter(Booking.organization_id == int(org_id))
-        elif user_id:
+        elif user_id and str(user_id).isdigit():
             q = q.filter(Booking.user_id == int(user_id))
         rows = q.offset(offset).limit(limit).all()
         return jsonify([booking_to_dict(b) for b in rows])
     finally:
         db.close()
+
 
 
 

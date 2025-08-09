@@ -299,8 +299,11 @@ def book():
             db.flush()  # får id:n
 
             # skapa booking
+            # skapa booking
             b = Booking(
-                user_id=user_id,
+                user_id=int(user_id) if str(user_id).isdigit() else user_id,
+                organization_id=int(organization_id) if str(organization_id).isdigit() else organization_id,
+
                 selected_mode=data.get("selected_mode"),
                 price_eur=float(data.get("price_eur") or 0.0),
                 pickup_date=None,  # keep None unless you plan to store a datetime here
@@ -315,10 +318,8 @@ def book():
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-                organization_id=organization_id,
-                user_id=int(user_id) if str(user_id).isdigit() else user_id,
-
             )
+
 
             db.add(b)
             db.commit()

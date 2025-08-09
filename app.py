@@ -65,17 +65,32 @@ def require_auth(role=None):
 # Antag: db-session heter `db` (scoped_session). Om du använder SessionLocal(): byt till det.
 # Om du har `SessionLocal`, gör: db = SessionLocal() och stäng efteråt.
 
+from werkzeug.exceptions import BadRequest
+
 @app.route("/register-organization", methods=["POST"])
 def register_organization():
-    data = request.get_json(force=True)
     db = SessionLocal()
     try:
+        try:
+            data = request.get_json(force=True)
+        except BadRequest as e:
+            app.logger.exception("JSON parse failed in /register-organization")
+            return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
+
+        # Snabb validering
+        required = ["vat_number", "company_name", "address", "invoice_email", "name", "email", "password"]
+        missing = [k for k in required if not data.get(k)]
+        if missing:
+            return jsonify({"error": "Missing required fields", "fields": missing}), 400
+
+        app.logger.info("Register org start vat=%s email=%s", data["vat_number"], data["email"])
+
         org = Organization(
             vat_number=data["vat_number"],
             company_name=data["company_name"],
             address=data["address"],
             invoice_email=data["invoice_email"],
-            payment_terms_days=data.get("payment_terms_days", 10),
+            payment_terms_days=int(data.get("payment_terms_days", 10)),
             currency=data.get("currency", "EUR"),
         )
         db.add(org)
@@ -90,10 +105,18 @@ def register_organization():
         )
         db.add(user)
         db.commit()
+        app.logger.info("Register org OK org_id=%s user_id=%s", org.id, user.id)
         return jsonify({"message": "Organization and admin created", "org_id": org.id}), 201
+
     except IntegrityError:
         db.rollback()
+        app.logger.warning("IntegrityError on register (duplicate VAT or email)")
         return jsonify({"error": "VAT number or email already exists"}), 400
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("Register organization failed")
+        # Skicka tillbaka felet så vi ser det i PowerShell
+        return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
 

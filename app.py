@@ -265,6 +265,7 @@ def book():
     try:
         data = request.get_json(force=True)
         app.logger.info("BOOK payload received")
+        organization_id = data.get("organization_id")
 
         # 1) Bygg XML
         xml_bytes = build_booking_xml(data)
@@ -314,6 +315,9 @@ def book():
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+                organization_id=organization_id,
+                user_id=int(user_id) if str(user_id).isdigit() else user_id,
+
             )
 
             db.add(b)

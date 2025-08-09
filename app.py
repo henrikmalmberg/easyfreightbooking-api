@@ -93,6 +93,24 @@ def register_organization():
     except IntegrityError:
         db.rollback()
         return jsonify({"error": "VAT number or email already exists"}), 400
+@app.route("/bookings", methods=["GET"])
+@require_auth()
+def get_bookings():
+    rows = db.query(Booking).filter(Booking.org_id == request.user["org_id"]).all()
+    return jsonify([b.to_dict() for b in rows])
+
+@app.route("/bookings/<int:booking_id>", methods=["GET"])
+@require_auth()
+def get_booking(booking_id):
+    b = db.query(Booking).filter(
+        Booking.id == booking_id,
+        Booking.org_id == request.user["org_id"],
+    ).first()
+    if not b:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(b.to_dict())
+
+
 
 @app.route("/login", methods=["POST"])
 def login():

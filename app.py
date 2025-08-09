@@ -12,6 +12,9 @@ from sqlalchemy.orm import scoped_session
 
 import os
 
+from .database import Base, engine
+Base.metadata.create_all(bind=engine)
+
 def parse_yyyy_mm_dd(s: str | None):
     if not s:
         return None

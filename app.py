@@ -6,13 +6,15 @@ import pytz
 import holidays
 import json
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from models import Base, Address, Booking
-from sqlalchemy.orm import scoped_session
-import os, datetime, jwt
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.exc import IntegrityError
+from models import Base, Address, Booking, Organization, User
+
+import os, jwt
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy.exc import IntegrityError
+
+
 
 import os
 
@@ -37,8 +39,10 @@ CORS(app, origins=[
     "https://easyfreightbooking-dashboard.onrender.com",
     "https://easyfreightbooking-dashboard.onrender.com/new-booking"
 ])
+
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
 
 
 def require_auth(role=None):
@@ -68,6 +72,7 @@ def require_auth(role=None):
 @app.route("/register-organization", methods=["POST"])
 def register_organization():
     data = request.get_json(force=True)
+    db = SessionLocal()
     try:
         org = Organization(
             vat_number=data["vat_number"],
@@ -78,7 +83,7 @@ def register_organization():
             currency=data.get("currency", "EUR"),
         )
         db.add(org)
-        db.flush()  # få org.id
+        db.flush()  # get org.id
 
         user = User(
             org_id=org.id,
@@ -93,47 +98,65 @@ def register_organization():
     except IntegrityError:
         db.rollback()
         return jsonify({"error": "VAT number or email already exists"}), 400
-@app.route("/bookings", methods=["GET"])
-@require_auth()
+    finally:
+        db.close()
+
+
+
+
+
 def get_bookings():
     rows = db.query(Booking).filter(Booking.org_id == request.user["org_id"]).all()
     return jsonify([b.to_dict() for b in rows])
 
-@app.route("/bookings/<int:booking_id>", methods=["GET"])
+
+
+
+
+@app.route("/bookings", methods=["GET"])
 @require_auth()
-def get_booking(booking_id):
-    b = db.query(Booking).filter(
-        Booking.id == booking_id,
-        Booking.org_id == request.user["org_id"],
-    ).first()
-    if not b:
-        return jsonify({"error": "Not found"}), 404
-    return jsonify(b.to_dict())
+def get_bookings():
+    db = SessionLocal()
+    try:
+        rows = db.query(Booking).filter(Booking.org_id == request.user["org_id"]).order_by(Booking.created_at.desc()).all()
+        # Om du använder booking_to_dict:
+        return jsonify([booking_to_dict(b) for b in rows])
+        # alternativt: [b.to_dict() for b in rows]
+    finally:
+        db.close()
+
 
 
 
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
-    user = db.query(User).filter(User.email == data["email"]).first()
-    if not user or not check_password_hash(user.password_hash, data["password"]):
-        return jsonify({"error": "Invalid credentials"}), 401
-    token = jwt.encode(
-        {
-            "user_id": user.id,
-            "org_id": user.org_id,
-            "role": user.role,
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_HOURS),
-        },
-        SECRET_KEY,
-        algorithm="HS256",
-    )
-    return jsonify({"token": token})
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == data["email"]).first()
+        if not user or not check_password_hash(user.password_hash, data["password"]):
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        token = jwt.encode(
+            {
+                "user_id": user.id,
+                "org_id": user.org_id,
+                "role": user.role,
+                "exp": datetime.utcnow() + timedelta(hours=JWT_HOURS),
+            },
+            SECRET_KEY,
+            algorithm="HS256",
+        )
+        return jsonify({"token": token})
+    finally:
+        db.close()
+
 
 @app.route("/invite-user", methods=["POST"])
 @require_auth(role="admin")
 def invite_user():
     data = request.get_json(force=True)
+    db = SessionLocal()
     try:
         user = User(
             org_id=request.user["org_id"],
@@ -148,6 +171,9 @@ def invite_user():
     except IntegrityError:
         db.rollback()
         return jsonify({"error": "Email already exists"}), 400
+    finally:
+        db.close()
+
 
 
 # Läs in konfigurationsdata
@@ -160,11 +186,9 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
 
 engine = create_engine(DATABASE_URL)
-from sqlalchemy.orm import scoped_session
 SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
-
-# 🏗️ Skapa tabeller om de inte redan finns
 Base.metadata.create_all(bind=engine)
+
 
 
 # ---------- Hjälpfunktioner: pris, tider, mm ----------
@@ -231,7 +255,7 @@ def list_bookings():
     try:
         q = db.query(Booking).order_by(Booking.created_at.desc())
         if org_id and str(org_id).isdigit():
-            q = q.filter(Booking.organization_id == int(org_id))
+            q = q.filter(Booking.org_id == int(org_id))
         elif user_id and str(user_id).isdigit():
             q = q.filter(Booking.user_id == int(user_id))
         rows = q.offset(offset).limit(limit).all()
@@ -378,18 +402,23 @@ INTERNAL_BOOKING_EMAIL = os.getenv("INTERNAL_BOOKING_EMAIL", "henrik.malmberg@be
 EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"   # <— NYTT
 
 @app.post("/book")
+@require_auth()  # <— viktigt
 def book():
+    db = SessionLocal()
     try:
         data = request.get_json(force=True)
         app.logger.info("BOOK payload received")
-        organization_id = data.get("organization_id")
 
         # 1) Bygg XML
         xml_bytes = build_booking_xml(data)
         app.logger.info("XML built, %d bytes", len(xml_bytes))
 
-            # 4) Spara i DB (Address + Booking)
-        user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or "1"
+        # 2) Spara i DB (Address + Booking)
+        user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id")
+        try:
+            user_id = int(user_id) if user_id is not None else None
+        except:
+            user_id = None
 
         def mk_addr(src: dict, addr_type: str) -> Address:
             return Address(
@@ -407,47 +436,81 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-        db = SessionLocal()
-        try:
-            # skapa adresser
-            sender = mk_addr(data.get("pickup", {}) or {}, "sender")
-            receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
-            db.add(sender); db.add(receiver)
-            db.flush()  # får id:n
+        sender = mk_addr(data.get("pickup", {}) or {}, "sender")
+        receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
+        db.add(sender); db.add(receiver)
+        db.flush()  # får id:n
 
-            # skapa booking
-            # skapa booking
-            b = Booking(
-                user_id=int(user_id) if str(user_id).isdigit() else user_id,
-                organization_id=int(organization_id) if str(organization_id).isdigit() else organization_id,
+        # Hämta org_id från token
+        org_id = request.user["org_id"]
 
-                selected_mode=data.get("selected_mode"),
-                price_eur=float(data.get("price_eur") or 0.0),
-                pickup_date=None,  # keep None unless you plan to store a datetime here
-                transit_time_days=str(data.get("transit_time_days") or ""),
-                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
-                sender_address_id=sender.id,
-                receiver_address_id=receiver.id,
-                goods=data.get("goods"),
-                references=data.get("references"),
-                addons=data.get("addons"),
-                asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
-                requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
-                asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
-                requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-                db.add(booking)
-                db.commit()
+        b = Booking(
+            user_id=user_id,
+            org_id=org_id,
+            selected_mode=data.get("selected_mode"),
+            price_eur=float(data.get("price_eur") or 0.0),
+            pickup_date=None,  # spara som None om du inte har säkert UTC-datum
+            transit_time_days=str(data.get("transit_time_days") or ""),
+            co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
+            sender_address_id=sender.id,
+            receiver_address_id=receiver.id,
+            goods=data.get("goods"),
+            references=data.get("references"),
+            addons=data.get("addons"),
+            asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
+            requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
+            asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
+            requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+        )
+        db.add(b)
+        db.commit()
+        booking_id = b.id
+
+        # 3) E-post (valfritt, styrs av EMAIL_ENABLED)
+        to_confirm = set()
+        if data.get("booker", {}).get("email"):
+            to_confirm.add(data["booker"]["email"])
+        uc_email = (data.get("update_contact") or {}).get("email")
+        if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
+            to_confirm.add(uc_email)
+
+        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
+        body_conf = render_text_confirmation(data)
+        if EMAIL_ENABLED:
+            for rcpt in to_confirm:
+                app.logger.info("Sending confirmation to %s", rcpt)
+                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
+
+        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
+        body_internal = render_text_internal(data)
+        if EMAIL_ENABLED:
+            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
+            send_email(
+                to=INTERNAL_BOOKING_EMAIL,
+                subject=subject_internal,
+                body=body_internal,
+                attachments=[("booking.xml", "application/xml", xml_bytes)],
             )
 
+        saved = {
+            "booking_id": booking_id,
+            "asap_pickup": b.asap_pickup,
+            "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
+            "asap_delivery": b.asap_delivery,
+            "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
+        }
+        return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, **saved})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("BOOK failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
 
-            db.add(b)
-            db.commit()
-            booking_id = b.id
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+
+
+
+
         
         # 2) Bekräftelser till bokare + update_contact (om olika)
         to_confirm = set()

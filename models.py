@@ -38,7 +38,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     role = Column(String, nullable=False)  # "admin" eller "member"
     hashed_password = Column(String, nullable=False)  # lösenord lagras hashat
-    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     organization = relationship("Organization", back_populates="users")
@@ -100,7 +101,8 @@ class Booking(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+
     organization = relationship("Organization", back_populates="bookings")
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)

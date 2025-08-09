@@ -37,6 +37,100 @@ CORS(app, origins=[
     "https://easyfreightbooking-dashboard.onrender.com",
     "https://easyfreightbooking-dashboard.onrender.com/new-booking"
 ])
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
+JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
+
+def require_auth(role=None):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            token = request.headers.get("Authorization", "").replace("Bearer ", "")
+            if not token:
+                return jsonify({"error": "Missing token"}), 401
+            try:
+                decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            except jwt.ExpiredSignatureError:
+                return jsonify({"error": "Token expired"}), 401
+            except Exception:
+                return jsonify({"error": "Invalid token"}), 401
+            request.user = decoded  # { user_id, org_id, role }
+            if role and decoded.get("role") != role:
+                return jsonify({"error": "Forbidden"}), 403
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# Antag: from models import Organization, User, Booking
+# Antag: db-session heter `db` (scoped_session). Om du använder SessionLocal(): byt till det.
+# Om du har `SessionLocal`, gör: db = SessionLocal() och stäng efteråt.
+
+@app.route("/register-organization", methods=["POST"])
+def register_organization():
+    data = request.get_json(force=True)
+    try:
+        org = Organization(
+            vat_number=data["vat_number"],
+            company_name=data["company_name"],
+            address=data["address"],
+            invoice_email=data["invoice_email"],
+            payment_terms_days=data.get("payment_terms_days", 10),
+            currency=data.get("currency", "EUR"),
+        )
+        db.add(org)
+        db.flush()  # få org.id
+
+        user = User(
+            org_id=org.id,
+            name=data["name"],
+            email=data["email"],
+            password_hash=generate_password_hash(data["password"]),
+            role="admin",
+        )
+        db.add(user)
+        db.commit()
+        return jsonify({"message": "Organization and admin created", "org_id": org.id}), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"error": "VAT number or email already exists"}), 400
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json(force=True)
+    user = db.query(User).filter(User.email == data["email"]).first()
+    if not user or not check_password_hash(user.password_hash, data["password"]):
+        return jsonify({"error": "Invalid credentials"}), 401
+    token = jwt.encode(
+        {
+            "user_id": user.id,
+            "org_id": user.org_id,
+            "role": user.role,
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_HOURS),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
+    return jsonify({"token": token})
+
+@app.route("/invite-user", methods=["POST"])
+@require_auth(role="admin")
+def invite_user():
+    data = request.get_json(force=True)
+    try:
+        user = User(
+            org_id=request.user["org_id"],
+            name=data["name"],
+            email=data["email"],
+            password_hash=generate_password_hash(data["password"]),
+            role=data.get("role", "user"),
+        )
+        db.add(user)
+        db.commit()
+        return jsonify({"message": "User invited", "user_id": user.id}), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"error": "Email already exists"}), 400
+
 
 # Läs in konfigurationsdata
 with open("config.json", "r") as f:

@@ -44,6 +44,7 @@ class Address(Base):
     __tablename__ = "addresses"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     type = Column(String, nullable=False)  # "sender" or "receiver"
 
     business_name = Column(String(100))

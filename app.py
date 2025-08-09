@@ -15,10 +15,6 @@ from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 
 
-
-import os
-
-
 def parse_yyyy_mm_dd(s: str | None):
     if not s:
         return None
@@ -103,11 +99,6 @@ def register_organization():
 
 
 
-
-
-def get_bookings():
-    rows = db.query(Booking).filter(Booking.org_id == request.user["org_id"]).all()
-    return jsonify([b.to_dict() for b in rows])
 
 
 
@@ -244,24 +235,6 @@ def booking_to_dict(b):
 
 
 
-@app.get("/bookings")
-def list_bookings():
-    org_id = request.args.get("organization_id")
-    user_id = request.args.get("user_id")
-    limit = min(int(request.args.get("limit", 50)), 200)
-    offset = int(request.args.get("offset", 0))
-
-    db = SessionLocal()
-    try:
-        q = db.query(Booking).order_by(Booking.created_at.desc())
-        if org_id and str(org_id).isdigit():
-            q = q.filter(Booking.org_id == int(org_id))
-        elif user_id and str(user_id).isdigit():
-            q = q.filter(Booking.user_id == int(user_id))
-        rows = q.offset(offset).limit(limit).all()
-        return jsonify([booking_to_dict(b) for b in rows])
-    finally:
-        db.close()
 
 
 
@@ -333,7 +306,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     # 📆 Earliest pickup
     try:
         now_utc = datetime.utcnow()
-        tz_name = pytz.country_timezones[pickup_country.lower()][0]
+        tz_name = pytz.country_timezones[pickup_country.upper()][0]
         now_local = now_utc.replace(tzinfo=pytz.utc).astimezone(pytz.timezone(tz_name))
     except:
         now_local = datetime.utcnow()
@@ -512,23 +485,7 @@ def book():
 
 
         
-        # 2) Bekräftelser till bokare + update_contact (om olika)
-        to_confirm = set()
-        if data.get("booker", {}).get("email"):
-            to_confirm.add(data["booker"]["email"])
-        uc_email = (data.get("update_contact") or {}).get("email")
-        if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
-            to_confirm.add(uc_email)
 
-        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
-        body_conf = render_text_confirmation(data)
-
-        if EMAIL_ENABLED:
-            for rcpt in to_confirm:
-                app.logger.info("Sending confirmation to %s", rcpt)
-                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
-        else:
-            app.logger.info("EMAIL_DISABLED: skipping confirmations to %s", list(to_confirm))
 
         # 3) Internt bokningsmejl med XML
         subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"

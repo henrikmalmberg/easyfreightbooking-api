@@ -487,37 +487,6 @@ def book():
         
 
 
-        # 3) Internt bokningsmejl med XML
-        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
-        body_internal = render_text_internal(data)
-
-        if EMAIL_ENABLED:
-            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
-            send_email(
-                to=INTERNAL_BOOKING_EMAIL,
-                subject=subject_internal,
-                body=body_internal,
-                attachments=[("booking.xml", "application/xml", xml_bytes)]
-            )
-        else:
-            app.logger.info("EMAIL_DISABLED: skipping internal email to %s", INTERNAL_BOOKING_EMAIL)
-
-        
-        saved = {
-            "booking_id": booking_id,
-            "asap_pickup": b.asap_pickup,
-            "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
-            "asap_delivery": b.asap_delivery,
-            "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
-        }
-        return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, **saved})
-
-
-
-    
-    except Exception as e:
-        app.logger.exception("BOOK failed")
-    return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------- E-post & XML-hjälpare ----------

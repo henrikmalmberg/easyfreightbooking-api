@@ -78,7 +78,7 @@ class Booking(Base):
     __tablename__ = "bookings"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, nullable=False)
+    
 
     selected_mode = Column(String, nullable=False)
     price_eur = Column(Float)

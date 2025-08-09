@@ -5,6 +5,9 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 import uuid
 from sqlalchemy import Boolean, Date
+from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy.orm import relationship
+
 
 Base = declarative_base()
 

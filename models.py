@@ -96,6 +96,12 @@ class Booking(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    organization = relationship("Organization", back_populates="bookings")
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user = relationship("User", back_populates="bookings")
+    
     # Relationer tillbaka till Address (frivilligt men trevligt)
     sender_address = relationship("Address", foreign_keys=[sender_address_id], back_populates="bookings_as_sender")
     receiver_address = relationship("Address", foreign_keys=[receiver_address_id], back_populates="bookings_as_receiver")

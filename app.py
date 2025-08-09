@@ -67,6 +67,31 @@ def require_auth(role=None):
 
 from werkzeug.exceptions import BadRequest
 
+@app.get("/me")
+@require_auth()
+def me():
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.id == request.user["user_id"]).first()
+        if not u:
+            return jsonify({"error": "Not found"}), 404
+        org = db.query(Organization).filter(Organization.id == u.org_id).first()
+        return jsonify({
+            "user": {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "role": u.role,
+            },
+            "organization": {
+                "id": org.id if org else None,
+                "company_name": org.company_name if org else "",
+                "vat_number": org.vat_number if org else "",
+            }
+        })
+    finally:
+        db.close()
+
 @app.route("/register-organization", methods=["POST"])
 def register_organization():
     db = SessionLocal()

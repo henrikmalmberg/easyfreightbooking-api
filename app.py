@@ -165,6 +165,10 @@ def login():
     finally:
         db.close()
 
+@app.get("/ping")
+def ping():
+    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
 
 @app.route("/invite-user", methods=["POST"])
 @require_auth(role="admin")

@@ -11,6 +11,35 @@ Base = declarative_base()
 def generate_uuid():
     return str(uuid.uuid4())
 
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    vat_number = Column(String, unique=True, index=True, nullable=False)
+    company_name = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    invoice_email = Column(String, nullable=False)
+    payment_terms_days = Column(Integer, default=10)
+    currency = Column(String, default="EUR")
+
+    users = relationship("User", back_populates="organization")
+    bookings = relationship("Booking", back_populates="organization")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    role = Column(String, nullable=False)  # "admin" eller "member"
+    hashed_password = Column(String, nullable=False)  # lösenord lagras hashat
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    organization = relationship("Organization", back_populates="users")
+    bookings = relationship("Booking", back_populates="user")
+
 class Address(Base):
     __tablename__ = "addresses"
 

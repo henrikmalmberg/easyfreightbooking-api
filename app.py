@@ -435,6 +435,8 @@ def book():
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+                db.add(booking)
+                db.commit()
             )
 
 

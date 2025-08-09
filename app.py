@@ -415,14 +415,14 @@ def book():
 
         # 2) Spara i DB (Address + Booking)
         user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id")
-        try:
-            user_id = int(user_id) if user_id is not None else None
-        except:
-            user_id = None
+user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or request.user["user_id"]
+    try:
+        user_id = int(user_id)
+    except Exception:
+        user_id = request.user["user_id"]
 
         def mk_addr(src: dict, addr_type: str) -> Address:
             return Address(
-                user_id=user_id,
                 type=addr_type,  # "sender" / "receiver"
                 business_name=src.get("business_name"),
                 address=src.get("address"),

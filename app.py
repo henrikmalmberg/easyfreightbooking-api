@@ -103,25 +103,26 @@ def booking_to_dict(b):
     }
 
 
+
 @app.get("/bookings")
 def list_bookings():
-    user_id = request.args.get("user_id") or "1"
+    org_id = request.args.get("organization_id")
+    user_id = request.args.get("user_id")
     limit = min(int(request.args.get("limit", 50)), 200)
     offset = int(request.args.get("offset", 0))
 
     db = SessionLocal()
     try:
-        q = (
-            db.query(Booking)
-            .filter(Booking.user_id == user_id)
-            .order_by(Booking.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        rows = q.all()
+        q = db.query(Booking).order_by(Booking.created_at.desc())
+        if org_id:
+            q = q.filter(Booking.organization_id == int(org_id))
+        elif user_id:
+            q = q.filter(Booking.user_id == int(user_id))
+        rows = q.offset(offset).limit(limit).all()
         return jsonify([booking_to_dict(b) for b in rows])
     finally:
         db.close()
+
 
 
 def is_zone_allowed(country, postal_prefix, available_zones):

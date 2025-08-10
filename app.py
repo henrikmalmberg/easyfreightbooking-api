@@ -14,7 +14,6 @@ import os, jwt
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 
-
 def parse_yyyy_mm_dd(s: str | None):
     if not s:
         return None
@@ -22,7 +21,6 @@ def parse_yyyy_mm_dd(s: str | None):
         return datetime.strptime(s, "%Y-%m-%d").date()
     except Exception:
         return None
-
 
 # ---- Nytt: e-post & XML ----
 import smtplib, ssl
@@ -38,8 +36,6 @@ CORS(app, origins=[
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
-
-
 
 def require_auth(role=None):
     def decorator(f):
@@ -64,11 +60,6 @@ def require_auth(role=None):
             return f(*args, **kwargs)
         return wrapper
     return decorator
-
-
-# Antag: from models import Organization, User, Booking
-# Antag: db-session heter `db` (scoped_session). Om du använder SessionLocal(): byt till det.
-# Om du har `SessionLocal`, gör: db = SessionLocal() och stäng efteråt.
 
 from werkzeug.exceptions import BadRequest
 
@@ -150,13 +141,6 @@ def register_organization():
     finally:
         db.close()
 
-
-
-
-
-
-
-
 @app.route("/bookings", methods=["GET"])
 @require_auth()
 def get_bookings():
@@ -179,10 +163,6 @@ def get_bookings():
         return jsonify([booking_to_dict(b) for b in rows])
     finally:
         db.close()
-
-
-
-
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -211,7 +191,6 @@ def login():
 def ping():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
-
 @app.route("/invite-user", methods=["POST"])
 @require_auth()  # låt både admin & superadmin
 def invite_user():
@@ -239,9 +218,6 @@ def invite_user():
     finally:
         db.close()
 
-
-
-
 # Läs in konfigurationsdata
 with open("config.json", "r") as f:
     config = json.load(f)
@@ -254,8 +230,6 @@ if not DATABASE_URL:
 engine = create_engine(DATABASE_URL)
 SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 Base.metadata.create_all(bind=engine)
-
-
 
 # ---------- Hjälpfunktioner: pris, tider, mm ----------
 def haversine(coord1, coord2):
@@ -289,6 +263,7 @@ def address_to_dict(a):
 def booking_to_dict(b):
     return {
         "id": b.id,
+        "booking_number": getattr(b, "booking_number", None),  # ← NYTT
         "user_id": b.user_id,
         "selected_mode": b.selected_mode,
         "price_eur": b.price_eur,
@@ -307,12 +282,6 @@ def booking_to_dict(b):
         "asap_delivery": b.asap_delivery,
         "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
     }
-
-
-
-
-
-
 
 def is_zone_allowed(country, postal_prefix, available_zones):
     if country not in available_zones:
@@ -439,6 +408,17 @@ def calculate():
         )
     return jsonify(results)
 
+# ---------- NYTT: Bokningsnummer-generator ----------
+# Format: XX-LLL-##### (2 bokstäver – 3 bokstäver – 5 siffror), utan I,O,Q,U
+LETTERS = "ABCDEFGHJKMNPQRSTVWXYZ"  # 24 tecken
+DIGITS = "0123456789"
+
+def generate_booking_number() -> str:
+    import secrets
+    p1 = "".join(secrets.choice(LETTERS) for _ in range(2))
+    p2 = "".join(secrets.choice(LETTERS) for _ in range(3))
+    p3 = "".join(secrets.choice(DIGITS)  for _ in range(5))
+    return f"{p1}-{p2}-{p3}"
 
 # ---------- NYTT: Booking endpoint ----------
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -461,7 +441,7 @@ def book():
         xml_bytes = build_booking_xml(data)
         app.logger.info("XML built, %d bytes", len(xml_bytes))
 
-        # 2) Spara i DB (Address + Booking)
+        # 2) Förbered data
         user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or request.user["user_id"]
         try:
             user_id = int(user_id)
@@ -470,7 +450,7 @@ def book():
 
         def mk_addr(src: dict, addr_type: str) -> Address:
             return Address(
-                user_id=user_id, 
+                user_id=user_id,
                 type=addr_type,  # "sender" / "receiver"
                 business_name=src.get("business_name"),
                 address=src.get("address"),
@@ -484,37 +464,56 @@ def book():
                 instructions=src.get("instructions"),
             )
 
+        # 3) Spara adresser först (egen commit) så de inte rullas tillbaka vid ev. nummerkrock
         sender = mk_addr(data.get("pickup", {}) or {}, "sender")
         receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
         db.add(sender); db.add(receiver)
-        db.flush()  # får id:n
+        db.commit()  # adresserna får permanenta id:n
 
         # Hämta org_id från token
         org_id = request.user["org_id"]
 
-        b = Booking(
-            user_id=user_id,
-            org_id=org_id,
-            selected_mode=data.get("selected_mode"),
-            price_eur=float(data.get("price_eur") or 0.0),
-            pickup_date=None,  # spara som None om du inte har säkert UTC-datum
-            transit_time_days=str(data.get("transit_time_days") or ""),
-            co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
-            sender_address_id=sender.id,
-            receiver_address_id=receiver.id,
-            goods=data.get("goods"),
-            references=data.get("references"),
-            addons=data.get("addons"),
-            asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
-            requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
-            asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
-            requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-        )
-        db.add(b)
-        db.commit()
-        booking_id = b.id
+        # 4) Skapa bokning med unikt bokningsnummer (retry vid krock)
+        booking_obj = None
+        for _ in range(7):
+            bn = generate_booking_number()
+            b = Booking(
+                booking_number=bn,  # ← NYTT
+                user_id=user_id,
+                org_id=org_id,
+                selected_mode=data.get("selected_mode"),
+                price_eur=float(data.get("price_eur") or 0.0),
+                pickup_date=None,  # spara som None om du inte har säkert UTC-datum
+                transit_time_days=str(data.get("transit_time_days") or ""),
+                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
+                sender_address_id=sender.id,
+                receiver_address_id=receiver.id,
+                goods=data.get("goods"),
+                references=data.get("references"),
+                addons=data.get("addons"),
+                asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
+                requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
+                asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
+                requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+            )
+            db.add(b)
+            try:
+                db.commit()
+                booking_obj = b
+                break
+            except IntegrityError:
+                db.rollback()
+                # Försök igen med nytt nummer
+                continue
 
-        # 3) E-post (valfritt, styrs av EMAIL_ENABLED)
+        if not booking_obj:
+            # Här har vi adresser kvar i DB men ingen bokning – rapportera tydligt
+            raise RuntimeError("Could not allocate a unique booking number after several attempts")
+
+        booking_id = booking_obj.id
+        booking_number = booking_obj.booking_number
+
+        # 5) E-post (valfritt, styrs av EMAIL_ENABLED)
         to_confirm = set()
         if data.get("booker", {}).get("email"):
             to_confirm.add(data["booker"]["email"])
@@ -522,14 +521,14 @@ def book():
         if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
             to_confirm.add(uc_email)
 
-        subject_conf = f"EFB Booking confirmation – {safe_ref(data)}"
+        subject_conf = f"EFB Booking confirmation – {booking_number}"
         body_conf = render_text_confirmation(data)
         if EMAIL_ENABLED:
             for rcpt in to_confirm:
                 app.logger.info("Sending confirmation to %s", rcpt)
                 send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
 
-        subject_internal = f"EFB NEW BOOKING – {safe_ref(data)}"
+        subject_internal = f"EFB NEW BOOKING – {booking_number}"
         body_internal = render_text_internal(data)
         if EMAIL_ENABLED:
             app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
@@ -542,10 +541,11 @@ def book():
 
         saved = {
             "booking_id": booking_id,
-            "asap_pickup": b.asap_pickup,
-            "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
-            "asap_delivery": b.asap_delivery,
-            "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
+            "booking_number": booking_number,  # ← NYTT i svaret
+            "asap_pickup": booking_obj.asap_pickup,
+            "requested_pickup_date": booking_obj.requested_pickup_date.isoformat() if booking_obj.requested_pickup_date else None,
+            "asap_delivery": booking_obj.asap_delivery,
+            "requested_delivery_date": booking_obj.requested_delivery_date.isoformat() if booking_obj.requested_delivery_date else None,
         }
         return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, **saved})
     except Exception as e:
@@ -554,15 +554,6 @@ def book():
         return jsonify({"ok": False, "error": str(e)}), 500
     finally:
         db.close()
-
-
-
-
-
-        
-
-
-
 
 # ---------- E-post & XML-hjälpare ----------
 def send_email(to: str, subject: str, body: str, attachments: list[tuple[str, str, bytes]]):
@@ -610,7 +601,6 @@ def build_booking_xml(d: dict) -> bytes:
         if loc_type == 1:
             chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
             ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
-
 
     goods_specs = ET.SubElement(booking, "goodsSpecifications")
     for g in d.get("goods") or []:
@@ -700,7 +690,6 @@ def render_text_internal(d: dict) -> str:
     lines.append("")
     lines.append("XML attached: booking.xml")
     return "\n".join(lines)
-
 
 # ---------- Main ----------
 if __name__ == "__main__":

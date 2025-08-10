@@ -1,7 +1,7 @@
 from flask_cors import CORS
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import pytz
 import holidays
 import json
@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import IntegrityError
 from models import Base, Address, Booking, Organization, User
 
-import os, jwt
+import os, jwt, re
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -19,6 +19,15 @@ def parse_yyyy_mm_dd(s: str | None):
         return None
     try:
         return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+def parse_hh_mm(s: str | None):
+    if not s:
+        return None
+    try:
+        hh, mm = s.split(":")
+        return time(int(hh), int(mm))
     except Exception:
         return None
 
@@ -164,6 +173,28 @@ def get_bookings():
     finally:
         db.close()
 
+# --- Validering av bokningsnummer (XX-LLL-#####) ---
+BOOKING_REGEX = re.compile(r"^[A-HJ-NP-TV-Z]{2}-[A-HJ-NP-TV-Z]{3}-\d{5}$")
+
+@app.get("/bookings/<booking_number>")
+@require_auth()
+def get_booking_by_number(booking_number: str):
+    code = (booking_number or "").upper()
+    if not BOOKING_REGEX.fullmatch(code):
+        return jsonify({"error": "Invalid booking number format"}), 400
+
+    db = SessionLocal()
+    try:
+        q = db.query(Booking).filter(Booking.booking_number == code)
+        if request.user["role"] != "superadmin":
+            q = q.filter(Booking.org_id == request.user["org_id"])
+        b = q.first()
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(booking_to_dict(b))
+    finally:
+        db.close()
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
@@ -243,6 +274,12 @@ def haversine(coord1, coord2):
     return R * c
 
 # --- helpers ---
+def _fmt_time(t):
+    try:
+        return t.strftime("%H:%M") if t else None
+    except Exception:
+        return None
+
 def address_to_dict(a):
     if not a:
         return None
@@ -263,24 +300,45 @@ def address_to_dict(a):
 def booking_to_dict(b):
     return {
         "id": b.id,
-        "booking_number": getattr(b, "booking_number", None),  # ← NYTT
+        "booking_number": getattr(b, "booking_number", None),
+        "booking_date": b.booking_date.isoformat() if getattr(b, "booking_date", None) else None,
+        "status": getattr(b, "status", None),
+
         "user_id": b.user_id,
         "selected_mode": b.selected_mode,
         "price_eur": b.price_eur,
         "pickup_date": b.pickup_date.isoformat() if b.pickup_date else None,
         "transit_time_days": b.transit_time_days,
         "co2_emissions": b.co2_emissions,
+
+        # Legacy request (bakåtkompatibelt svar)
+        "asap_pickup": b.asap_pickup,
+        "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
+        "asap_delivery": b.asap_delivery,
+        "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
+
+        # Nya datum/tidsfält – lastning
+        "loading_requested_date": b.loading_requested_date.isoformat() if b.loading_requested_date else None,
+        "loading_requested_time": _fmt_time(b.loading_requested_time),
+        "loading_planned_date": b.loading_planned_date.isoformat() if b.loading_planned_date else None,
+        "loading_planned_time": _fmt_time(b.loading_planned_time),
+        "loading_actual_date": b.loading_actual_date.isoformat() if b.loading_actual_date else None,
+        "loading_actual_time": _fmt_time(b.loading_actual_time),
+
+        # Nya datum/tidsfält – lossning
+        "unloading_requested_date": b.unloading_requested_date.isoformat() if b.unloading_requested_date else None,
+        "unloading_requested_time": _fmt_time(b.unloading_requested_time),
+        "unloading_planned_date": b.unloading_planned_date.isoformat() if b.unloading_planned_date else None,
+        "unloading_planned_time": _fmt_time(b.unloading_planned_time),
+        "unloading_actual_date": b.unloading_actual_date.isoformat() if b.unloading_actual_date else None,
+        "unloading_actual_time": _fmt_time(b.unloading_actual_time),
+
         "goods": b.goods,
         "references": b.references,
         "addons": b.addons,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "sender_address": address_to_dict(b.sender_address),
         "receiver_address": address_to_dict(b.receiver_address),
-        # NEW
-        "asap_pickup": b.asap_pickup,
-        "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
-        "asap_delivery": b.asap_delivery,
-        "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
     }
 
 def is_zone_allowed(country, postal_prefix, available_zones):
@@ -473,28 +531,45 @@ def book():
         # Hämta org_id från token
         org_id = request.user["org_id"]
 
+        # Läs requested datum/tider (nya fält om de finns i payload)
+        loading_req_date = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
+        loading_req_time = parse_hh_mm(data.get("requested_pickup_time"))
+        unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
+        unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
+
         # 4) Skapa bokning med unikt bokningsnummer (retry vid krock)
         booking_obj = None
         for _ in range(7):
             bn = generate_booking_number()
             b = Booking(
-                booking_number=bn,  # ← NYTT
+                booking_number=bn,
                 user_id=user_id,
                 org_id=org_id,
                 selected_mode=data.get("selected_mode"),
                 price_eur=float(data.get("price_eur") or 0.0),
-                pickup_date=None,  # spara som None om du inte har säkert UTC-datum
+                pickup_date=None,  # om du inte har säkert UTC-datum
                 transit_time_days=str(data.get("transit_time_days") or ""),
                 co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
+
                 sender_address_id=sender.id,
                 receiver_address_id=receiver.id,
                 goods=data.get("goods"),
                 references=data.get("references"),
                 addons=data.get("addons"),
+
+                # Legacy-flaggor kvar för bakåtkompat
                 asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
+
+                # Nya requested-fält
+                loading_requested_date=loading_req_date,
+                loading_requested_time=loading_req_time,
+                unloading_requested_date=unloading_req_date,
+                unloading_requested_time=unloading_req_time,
+
+                # status & booking_date hanteras av defaults i DB/modellen
             )
             db.add(b)
             try:
@@ -503,11 +578,10 @@ def book():
                 break
             except IntegrityError:
                 db.rollback()
-                # Försök igen med nytt nummer
                 continue
 
         if not booking_obj:
-            # Här har vi adresser kvar i DB men ingen bokning – rapportera tydligt
+            # adresser kvar men ingen bokning – rapportera tydligt
             raise RuntimeError("Could not allocate a unique booking number after several attempts")
 
         booking_id = booking_obj.id
@@ -541,7 +615,7 @@ def book():
 
         saved = {
             "booking_id": booking_id,
-            "booking_number": booking_number,  # ← NYTT i svaret
+            "booking_number": booking_number,
             "asap_pickup": booking_obj.asap_pickup,
             "requested_pickup_date": booking_obj.requested_pickup_date.isoformat() if booking_obj.requested_pickup_date else None,
             "asap_delivery": booking_obj.asap_delivery,
@@ -552,6 +626,101 @@ def book():
         db.rollback()
         app.logger.exception("BOOK failed")
         return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+# ---------- PATCH: uppdatera plan/utfall/status ----------
+@app.patch("/bookings/<bid>")
+@require_auth(role="admin")
+def update_booking(bid):
+    db = SessionLocal()
+    try:
+        b = db.query(Booking).filter(Booking.id == bid).first()
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+        if request.user["role"] != "superadmin" and b.org_id != request.user["org_id"]:
+            return jsonify({"error": "Forbidden"}), 403
+
+        data = request.get_json(force=True) or {}
+
+        # Låsning: booking_date får inte ändras via API
+        if "booking_date" in data:
+            data.pop("booking_date", None)
+
+        # Tillåtna fält: planned/actual + status
+        # Requested kan också uppdateras om du vill – här tillåter vi det.
+        def set_date(attr, key):
+            if key in data:
+                setattr(b, attr, parse_yyyy_mm_dd(data.get(key)) if data.get(key) else None)
+
+        def set_time(attr, key):
+            if key in data:
+                setattr(b, attr, parse_hh_mm(data.get(key)) if data.get(key) else None)
+
+        # Loading
+        set_date("loading_requested_date", "loading_requested_date")
+        set_time("loading_requested_time", "loading_requested_time")
+        set_date("loading_planned_date", "loading_planned_date")
+        set_time("loading_planned_time", "loading_planned_time")
+        set_date("loading_actual_date", "loading_actual_date")
+        set_time("loading_actual_time", "loading_actual_time")
+
+        # Unloading
+        set_date("unloading_requested_date", "unloading_requested_date")
+        set_time("unloading_requested_time", "unloading_requested_time")
+        set_date("unloading_planned_date", "unloading_planned_date")
+        set_time("unloading_planned_time", "unloading_planned_time")
+        set_date("unloading_actual_date", "unloading_actual_date")
+        set_time("unloading_actual_time", "unloading_actual_time")
+
+        # Auto-statusregler (så länge inte CANCELLED/EXCEPTION manuellt satts i samma payload)
+        manual_status = data.get("status")
+        if not manual_status or manual_status not in {
+            "CANCELLED", "EXCEPTION"
+        }:
+            if b.loading_planned_date or b.loading_planned_time:
+                if b.status in (None, "NEW", "CONFIRMED"):
+                    b.status = "PICKUP_PLANNED"
+            if b.loading_actual_date and b.loading_actual_time:
+                if b.status not in ("CANCELLED", "EXCEPTION"):
+                    b.status = "PICKED_UP"
+            if b.unloading_planned_date or b.unloading_planned_time:
+                if b.status not in ("DELIVERED", "COMPLETED", "CANCELLED", "EXCEPTION"):
+                    b.status = "DELIVERY_PLANNED"
+            if b.unloading_actual_date and b.unloading_actual_time:
+                if b.status not in ("CANCELLED", "EXCEPTION"):
+                    b.status = "DELIVERED"
+
+        # Manuell status-override, om giltig
+        if manual_status:
+            allowed = {
+                "NEW","CONFIRMED","PICKUP_PLANNED","PICKED_UP","IN_TRANSIT",
+                "DELIVERY_PLANNED","DELIVERED","COMPLETED","ON_HOLD","CANCELLED","EXCEPTION"
+            }
+            if manual_status not in allowed:
+                return jsonify({"error": "Invalid status"}), 400
+            b.status = manual_status
+
+        # Basvalideringar (datumordning)
+        if b.loading_planned_date and b.loading_actual_date:
+            if b.loading_actual_date < b.loading_planned_date:
+                return jsonify({"error": "Actual loading cannot be before planned loading"}), 400
+        if b.unloading_planned_date and b.unloading_actual_date:
+            if b.unloading_actual_date < b.unloading_planned_date:
+                return jsonify({"error": "Actual unloading cannot be before planned unloading"}), 400
+        if b.unloading_actual_date and b.loading_actual_date:
+            if b.unloading_actual_date < b.loading_actual_date:
+                return jsonify({"error": "Actual unloading cannot be before actual loading"}), 400
+
+        db.commit()
+        return jsonify(booking_to_dict(b))
+    except BadRequest as e:
+        db.rollback()
+        return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("PATCH /bookings failed")
+        return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
 

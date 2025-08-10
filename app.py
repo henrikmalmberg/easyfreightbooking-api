@@ -54,12 +54,17 @@ def require_auth(role=None):
                 return jsonify({"error": "Token expired"}), 401
             except Exception:
                 return jsonify({"error": "Invalid token"}), 401
+
             request.user = decoded  # { user_id, org_id, role }
-            if role and decoded.get("role") != role:
+
+            # 💡 superadmin får alltid passera
+            if role and decoded.get("role") not in (role, "superadmin"):
                 return jsonify({"error": "Forbidden"}), 403
+
             return f(*args, **kwargs)
         return wrapper
     return decorator
+
 
 # Antag: from models import Organization, User, Booking
 # Antag: db-session heter `db` (scoped_session). Om du använder SessionLocal(): byt till det.
@@ -157,12 +162,24 @@ def register_organization():
 def get_bookings():
     db = SessionLocal()
     try:
-        rows = db.query(Booking).filter(Booking.org_id == request.user["org_id"]).order_by(Booking.created_at.desc()).all()
-        # Om du använder booking_to_dict:
+        q = db.query(Booking).order_by(Booking.created_at.desc())
+
+        if request.user["role"] == "superadmin":
+            # valfria filter om du vill:
+            org_id = request.args.get("org_id", type=int)
+            user_id = request.args.get("user_id", type=int)
+            if org_id:
+                q = q.filter(Booking.org_id == org_id)
+            if user_id:
+                q = q.filter(Booking.user_id == user_id)
+            rows = q.all()
+        else:
+            rows = q.filter(Booking.org_id == request.user["org_id"]).all()
+
         return jsonify([booking_to_dict(b) for b in rows])
-        # alternativt: [b.to_dict() for b in rows]
     finally:
         db.close()
+
 
 
 
@@ -196,13 +213,18 @@ def ping():
 
 
 @app.route("/invite-user", methods=["POST"])
-@require_auth(role="admin")
+@require_auth()  # låt både admin & superadmin
 def invite_user():
     data = request.get_json(force=True)
     db = SessionLocal()
     try:
+        if request.user["role"] == "superadmin":
+            target_org_id = data.get("org_id") or request.user["org_id"]
+        else:
+            target_org_id = request.user["org_id"]
+
         user = User(
-            org_id=request.user["org_id"],
+            org_id=target_org_id,
             name=data["name"],
             email=data["email"],
             password_hash=generate_password_hash(data["password"]),
@@ -216,6 +238,7 @@ def invite_user():
         return jsonify({"error": "Email already exists"}), 400
     finally:
         db.close()
+
 
 
 

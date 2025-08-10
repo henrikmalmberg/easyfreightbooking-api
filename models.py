@@ -1,5 +1,8 @@
 # models.py
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Text, JSON, Boolean, Date, Integer, CheckConstraint
+from sqlalchemy import (
+    Column, String, Float, DateTime, ForeignKey, Text, JSON, Boolean,
+    Date, Integer, CheckConstraint, Time
+)
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -9,6 +12,23 @@ Base = declarative_base()
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+# ---------------------------------------------------------
+# Booking status – tillåten uppsättning (lagom granularitet)
+# ---------------------------------------------------------
+STATUS_VALUES = (
+    "NEW",               # skapad
+    "CONFIRMED",         # bekräftad internt
+    "PICKUP_PLANNED",    # planerat lastningsdatum finns
+    "PICKED_UP",         # verklig lastning satt
+    "IN_TRANSIT",        # på väg
+    "DELIVERY_PLANNED",  # planerat lossningsdatum finns
+    "DELIVERED",         # verklig lossning satt
+    "COMPLETED",         # administrativt avslutad
+    "ON_HOLD",           # pausad / väntar info
+    "CANCELLED",         # avbruten
+    "EXCEPTION",         # avvikelse
+)
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -69,17 +89,53 @@ class Booking(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
 
+    # --------- NYTT: identitet & meta ----------
+    booking_number = Column(String(16), unique=True, index=True, nullable=False)  # ex. "FT-KMV-49285"
+    booking_date   = Column(Date, nullable=False, server_default=func.current_date())  # sätts av DB vid insert
+    status = Column(
+        String(32),
+        CheckConstraint(
+            "status IN ("
+            "'NEW','CONFIRMED','PICKUP_PLANNED','PICKED_UP','IN_TRANSIT',"
+            "'DELIVERY_PLANNED','DELIVERED','COMPLETED','ON_HOLD','CANCELLED','EXCEPTION'"
+            ")",
+            name="ck_booking_status",
+        ),
+        nullable=False,
+        default="NEW",
+        server_default="NEW",
+    )
+
+    # --------- Befintliga pris/offer-fält ----------
     selected_mode = Column(String, nullable=False)
     price_eur = Column(Float)
     pickup_date = Column(DateTime)
     transit_time_days = Column(String)
     co2_emissions = Column(Float)
 
+    # --------- Legacy "request" från tidigare UI (behålls för bakåtkomp.) ----------
     asap_pickup = Column(Boolean, nullable=True)
     requested_pickup_date = Column(Date, nullable=True)
     asap_delivery = Column(Boolean, nullable=True)
     requested_delivery_date = Column(Date, nullable=True)
 
+    # --------- NYTT: Requested / Planned / Actual (lastning) ----------
+    loading_requested_date = Column(Date, nullable=True)
+    loading_requested_time = Column(Time, nullable=True)
+    loading_planned_date   = Column(Date, nullable=True)
+    loading_planned_time   = Column(Time, nullable=True)
+    loading_actual_date    = Column(Date, nullable=True)
+    loading_actual_time    = Column(Time, nullable=True)
+
+    # --------- NYTT: Requested / Planned / Actual (lossning) ----------
+    unloading_requested_date = Column(Date, nullable=True)
+    unloading_requested_time = Column(Time, nullable=True)
+    unloading_planned_date   = Column(Date, nullable=True)
+    unloading_planned_time   = Column(Time, nullable=True)
+    unloading_actual_date    = Column(Date, nullable=True)
+    unloading_actual_time    = Column(Time, nullable=True)
+
+    # --------- Adresser & övrigt ----------
     sender_address_id = Column(String, ForeignKey("addresses.id"))
     receiver_address_id = Column(String, ForeignKey("addresses.id"))
 

@@ -643,9 +643,19 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
     }
 
 
+import uuid
+import logging
+
+# Koppla Flask-loggningen till Gunicorns logger (så allt syns i Render)
+gunicorn_logger = logging.getLogger("gunicorn.error")
+if gunicorn_logger.handlers:
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+
 @app.route("/calculate", methods=["POST"])
 def calculate():
-    data = request.json
+    debug_id = uuid.uuid4().hex[:8]  # kort korrelations-ID
+    data = request.json or {}
     try:
         pickup_coord = data["pickup_coordinate"]
         pickup_country = data["pickup_country"]
@@ -654,29 +664,36 @@ def calculate():
         delivery_country = data["delivery_country"]
         delivery_postal = data["delivery_postal_prefix"]
         weight = float(data["chargeable_weight"])
-    except (KeyError, ValueError):
-        return jsonify({"error": "Missing or invalid input"}), 400
+    except (KeyError, ValueError) as e:
+        app.logger.warning("CALC %s bad input: %s | payload=%s", debug_id, e, data)
+        return jsonify({"error": "Missing or invalid input", "debug_id": debug_id}), 400
 
     active_cfg = get_active_config(use="published") or {}
+    app.logger.info(
+        "CALC %s start %s-%s %s -> %s-%s %s kg",
+        debug_id, pickup_country, pickup_postal, pickup_coord, delivery_country, delivery_postal, weight
+    )
 
     results = {}
     for mode, cfg in active_cfg.items():
         try:
-            results[mode] = calculate_for_mode(
+            r = calculate_for_mode(
                 cfg, pickup_coord, delivery_coord,
                 pickup_country, pickup_postal, delivery_country, delivery_postal,
                 weight, mode_name=mode
             )
-        except Exception as e:
-            # Logga men döda inte hela svaret
-            app.logger.exception("calculate_for_mode failed for %s", mode)
-            results[mode] = {
-                "available": False,
-                "status": "error",
-                "error": str(e)
-            }
+            results[mode] = r
+            if r.get("available"):
+                app.logger.info("CALC %s %s ok price=%s dist=%s", debug_id, mode, r.get("total_price_eur"), r.get("distance_km"))
+            else:
+                app.logger.info("CALC %s %s not-available: %s", debug_id, mode, r.get("status"))
+        except Exception:
+            app.logger.exception("CALC %s %s crashed in calculate_for_mode", debug_id, mode)
+            results[mode] = {"available": False, "status": "error", "error": "internal", "mode": mode}
 
-    return jsonify(results)
+    app.logger.info("CALC %s done", debug_id)
+    return jsonify({"debug_id": debug_id, **results})
+
 
 
 # =========================================================

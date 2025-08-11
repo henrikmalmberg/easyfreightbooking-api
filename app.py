@@ -187,6 +187,12 @@ def register_organization():
         if missing:
             return jsonify({"error": "Missing required fields", "fields": missing}), 400
 
+        # nya fält (frivilliga men validerade om angivna)
+        postal_code = (data.get("postal_code") or "").strip()
+        country_code = (data.get("country_code") or "").strip().upper() or None
+        if country_code and country_code not in ALLOWED_CC:
+            return jsonify({"error":"Invalid country code","field":"country_code"}), 400
+        
         # 1) Normalisera & validera VAT
         nvat = normalize_vat(data["vat_number"])
         if not is_vat_format(nvat):
@@ -196,57 +202,45 @@ def register_organization():
         if not valid:
             return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
 
-        # 2) Finns organisationen redan? -> returnera admin-kontakt
-        existing_org = db.query(Organization).filter(Organization.vat_number == nvat).first()
-        if existing_org:
-            admin = (
-                db.query(User)
-                  .filter(User.org_id == existing_org.id, User.role.in_(["admin"]))
-                  .order_by(User.id.asc())
-                  .first()
-            )
-            admin_info = {"name": admin.name, "email": admin.email} if admin else None
+
+        # 1) finns org på VAT? -> 409 + admin-kontakt
+        org = db.query(Organization).filter(Organization.vat_number == nvat).first()
+        if org:
+            admin = (db.query(User)
+                       .filter(User.org_id == org.id, User.role.in_(["admin","superadmin"]))
+                       .order_by(User.id.asc())
+                       .first())
             return jsonify({
                 "error": "Organization already exists",
-                "admin": admin_info
-            }), 409  # Conflict
+                "admin": {"name": admin.name, "email": admin.email} if admin else None
+            }), 409
 
-        # 3) Finns e-post redan?
-        existing_user = db.query(User).filter(User.email == data["email"]).first()
-        if existing_user:
-            return jsonify({"error": "Email already in use", "field": "email"}), 409
+        # 2) finns e-post redan?
+        if db.query(User).filter(User.email == data["email"]).first():
+            return jsonify({"error":"Email already in use","field":"email"}), 409
 
-        app.logger.info("Register org start vat=%s email=%s", nvat, data["email"])
-
-        # 4) Skapa org (tvinga default på betalvillkor/valuta)
+        # 3) skapa
         org = Organization(
             vat_number=nvat,
             company_name=data["company_name"],
             address=data["address"],
             invoice_email=data["invoice_email"],
-            payment_terms_days=10,   # default, ej redigerbart här
-            currency="EUR",          # default, ej redigerbart här
+            payment_terms_days=10,  # låst default
+            currency="EUR",         # låst default
+            postal_code=postal_code or None,
+            country_code=country_code,
         )
-        db.add(org)
-        db.flush()  # org.id
+        db.add(org); db.flush()
 
         user = User(
-            org_id=org.id,
-            name=data["name"],
-            email=data["email"],
-            password_hash=generate_password_hash(data["password"]),
-            role="admin",
+            org_id=org.id, name=data["name"], email=data["email"],
+            password_hash=generate_password_hash(data["password"]), role="admin"
         )
-        db.add(user)
-        db.commit()
-
-        app.logger.info("Register org OK org_id=%s user_id=%s", org.id, user.id)
-        return jsonify({"message": "Organization and admin created", "org_id": org.id}), 201
-
+        db.add(user); db.commit()
+        return jsonify({"message":"Organization and admin created","org_id":org.id}), 201
     except Exception:
-        db.rollback()
-        app.logger.exception("Register organization failed")
-        return jsonify({"error": "Server error"}), 500
+        db.rollback(); app.logger.exception("register-organization failed")
+        return jsonify({"error":"Server error"}), 500
     finally:
         db.close()
 

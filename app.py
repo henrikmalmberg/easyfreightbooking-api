@@ -21,6 +21,8 @@ from email.message import EmailMessage
 import xml.etree.ElementTree as ET
 import requests
 from xml.etree import ElementTree as XET
+from sqlalchemy import or_
+
 
 
 # =========================================================
@@ -502,93 +504,180 @@ def me():
     finally:
         db.close()
 
+# ---------- Auth / Me (superadmin-kompatibel) ----------
 @app.get("/auth/me")
-@jwt_required()
-def me():
-    uid = get_jwt_identity()
-    u = db.session.get(User, uid)
-    return jsonify({
-        "id": u.id, "email": u.email, "name": u.name,
-        "role": u.role, "organization_id": u.organization_id
-    })
-
-@app.get("/organizations")
-@jwt_required()
-@require_role("superadmin")
-def organizations_list():
-    orgs = Organization.query.order_by(Organization.name).all()
-    return jsonify([{"id": o.id, "name": o.name} for o in orgs])
-
-@app.get("/admin/users")
-@jwt_required()
-@require_role("superadmin")
-def users_list():
-    q = (request.args.get("search") or "").strip().lower()
-    page = int(request.args.get("page", 1))
-    page_size = int(request.args.get("page_size", 25))
-
-    query = db.session.query(User, Organization.name.label("organization_name")) \
-        .join(Organization, Organization.id==User.organization_id, isouter=True)
-
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            func.lower(User.email).like(like),
-            func.lower(User.name).like(like),
-            func.lower(Organization.name).like(like)
-        ))
-
-    total = query.count()
-    rows = query.order_by(User.created_at.desc()) \
-                .offset((page-1)*page_size).limit(page_size).all()
-
-    items = []
-    for u, org_name in rows:
-        items.append({
-            "id": u.id, "email": u.email, "name": u.name, "role": u.role,
-            "organization_id": u.organization_id, "organization_name": org_name,
-            "is_blocked": u.is_blocked, "created_at": u.created_at.isoformat()
+@require_auth()
+def auth_me():
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.id == request.user["user_id"]).first()
+        if not u:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "role": u.role,                # "superadmin" | "admin" | "user"
+            "organization_id": u.org_id,   # matcha frontend-fältet
         })
-    return jsonify({"items": items, "total": total})
+    finally:
+        db.close()
 
+
+# ---------- Organizations (superadmin only) ----------
+@app.get("/organizations")
+@require_auth("superadmin")
+def organizations_list():
+    db = SessionLocal()
+    try:
+        orgs = db.query(Organization).order_by(Organization.company_name.asc()).all()
+        return jsonify([{"id": o.id, "name": o.company_name} for o in orgs])
+    finally:
+        db.close()
+
+
+# ---------- Users list (superadmin only) ----------
+@app.get("/admin/users")
+@require_auth("superadmin")
+def users_list():
+    db = SessionLocal()
+    try:
+        q = (request.args.get("search") or "").strip().lower()
+        page = int(request.args.get("page", 1))
+        page_size = int(request.args.get("page_size", 25))
+
+        base = db.query(User, Organization.company_name.label("organization_name")) \
+                 .join(Organization, Organization.id == User.org_id, isouter=True)
+
+        if q:
+            like = f"%{q}%"
+            base = base.filter(or_(
+                sa_func.lower(User.email).like(like),
+                sa_func.lower(User.name).like(like),
+                sa_func.lower(Organization.company_name).like(like)
+            ))
+
+        total = base.count()
+        rows = (base
+                .order_by(User.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all())
+
+        items = []
+        for u, org_name in rows:
+            items.append({
+                "id": u.id,
+                "email": u.email,
+                "name": u.name,
+                "role": u.role,
+                "organization_id": u.org_id,
+                "organization_name": org_name,
+                "is_blocked": getattr(u, "is_blocked", False),
+                "created_at": getattr(u, "created_at", None).isoformat() if getattr(u, "created_at", None) else None,
+            })
+        return jsonify({"items": items, "total": total})
+    finally:
+        db.close()
+
+
+# ---------- Update user (superadmin only) ----------
 @app.put("/admin/users/<int:user_id>")
-@jwt_required()
-@require_role("superadmin")
+@require_auth("superadmin")
 def users_update(user_id):
-    me_id = get_jwt_identity()
-    me = db.session.get(User, me_id)
-    u = db.session.get(User, user_id)
-    if not u: return jsonify({"error": "Not found"}), 404
+    db = SessionLocal()
+    try:
+        me = db.query(User).get(request.user["user_id"])
+        u  = db.query(User).get(user_id)
+        if not u:
+            return jsonify({"error": "Not found"}), 404
 
-    if u.role == "superadmin" and u.id != me.id:
-        return jsonify({"error": "Cannot edit another superadmin"}), 403
+        # Guardrails
+        if u.role == "superadmin" and u.id != me.id:
+            return jsonify({"error": "Cannot edit another superadmin"}), 403
 
-    data = (request.get_json() or {})
-    allowed = {"email","name","role","organization_id","is_blocked"}
-    data = {k: v for k, v in data.items() if k in allowed}
+        data = (request.get_json() or {})
+        allowed = {"email", "name", "role", "organization_id", "is_blocked"}
+        data = {k: v for k, v in data.items() if k in allowed}
 
-    if u.id == me.id and data.get("role") and data["role"] != "superadmin":
-        return jsonify({"error": "Cannot demote yourself"}), 400
+        # egen modell heter org_id (inte organization_id)
+        if "organization_id" in data:
+            u.org_id = data.pop("organization_id")
 
-    for k, v in data.items(): setattr(u, k, v)
-    db.session.commit()
+        # block / roll
+        if "is_blocked" in data:
+            setattr(u, "is_blocked", bool(data.pop("is_blocked")))
+        if "role" in data:
+            new_role = data.pop("role")
+            if u.id == me.id and new_role != "superadmin":
+                return jsonify({"error": "Cannot demote yourself"}), 400
+            u.role = new_role
 
-    org_name = db.session.get(Organization, u.organization_id).name if u.organization_id else None
-    return jsonify({
-        "id": u.id, "email": u.email, "name": u.name, "role": u.role,
-        "organization_id": u.organization_id, "organization_name": org_name,
-        "is_blocked": u.is_blocked
-    })
+        # övrigt
+        for k, v in data.items():
+            setattr(u, k, v)
+
+        db.commit()
+
+        org = db.query(Organization).get(u.org_id) if u.org_id else None
+        return jsonify({
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "role": u.role,
+            "organization_id": u.org_id,
+            "organization_name": org.company_name if org else None,
+            "is_blocked": getattr(u, "is_blocked", False),
+        })
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("users_update failed")
+        return jsonify({"error": "Server error", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+
+# ---------- Send password reset (superadmin only) ----------
+def issue_password_reset_token(user: User) -> str:
+    # enkel JWT som gäller 60 min
+    return jwt.encode(
+        {
+            "sub": "pwd_reset",
+            "user_id": user.id,
+            "exp": datetime.utcnow() + timedelta(minutes=60),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
+
+def send_reset_email(to_email: str, token: str):
+    # Använd din befintliga send_email()
+    reset_url = f"https://easyfreightbooking.com/reset?token={token}"
+    body = f"""Hello,
+
+A password reset was requested for your account.
+If you initiated this, click the link below to reset your password:
+
+{reset_url}
+
+If you didn't request this, you can ignore this email.
+"""
+    send_email(to=to_email, subject="Reset your Easy Freight Booking password", body=body, attachments=[])
+
 
 @app.post("/admin/users/<int:user_id>/send-reset")
-@jwt_required()
-@require_role("superadmin")
+@require_auth("superadmin")
 def send_reset(user_id):
-    u = db.session.get(User, user_id)
-    if not u: return jsonify({"error":"Not found"}), 404
-    token = issue_password_reset_token(u)  # din befintliga funktion
-    send_reset_email(u.email, token)       # din mail-funktion
-    return jsonify({"ok": True})
+    db = SessionLocal()
+    try:
+        u = db.query(User).get(user_id)
+        if not u:
+            return jsonify({"error": "Not found"}), 404
+        token = issue_password_reset_token(u)
+        send_reset_email(u.email, token)
+        return jsonify({"ok": True})
+    finally:
+        db.close()
 
 
 @app.route("/invite-user", methods=["POST"])

@@ -5,71 +5,39 @@ from datetime import datetime, timedelta, time
 import pytz
 import holidays
 import json
+import os
+import jwt
+import re
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import IntegrityError
-from models import Base, Address, Booking, Organization, User
-import re
-from typing import Tuple, Dict, Any
 from sqlalchemy import func as sa_func
-from models import PricingConfig  # ← ny
-
+from typing import Tuple, Dict, Any
 from uuid import uuid4
 
+from models import Base, Address, Booking, Organization, User, PricingConfig
+
+# ---------------------- helpers: ids ----------------------
 def generate_uuid() -> str:
-    return str(uuid4())
+    return uuid4().hex
 
-
-import os, jwt, re
-
-import uuid
-
-def generate_uuid() -> str:
-    return uuid.uuid4().hex
-
-
-
-from functools import wraps
-from werkzeug.security import generate_password_hash, check_password_hash
-
-def parse_yyyy_mm_dd(s: str | None):
-    if not s:
-        return None
-    try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-def parse_hh_mm(s: str | None):
-    if not s:
-        return None
-    try:
-        hh, mm = s.split(":")
-        return time(int(hh), int(mm))
-    except Exception:
-        return None
-
-# ---- Nytt: e-post & XML ----
-import smtplib, ssl
-from email.message import EmailMessage
-import xml.etree.ElementTree as ET
-
+# ---------------------- app & CORS ------------------------
 app = Flask(__name__)
-CORS(app, resources={
-    r"/*": {
-        "origins": [
-            "https://easyfreightbooking.com",
-            "https://easyfreightbooking-dashboard.onrender.com",
-              "https://easyfreightbooking-dashboard.onrender.com/new-booking"
-        ],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-    }
-})
-
-    
-    
-    )
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": [
+                "https://easyfreightbooking.com",
+                "https://easyfreightbooking-dashboard.onrender.com",
+            ],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        }
+    },
+)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
@@ -90,7 +58,7 @@ def require_auth(role=None):
 
             request.user = decoded  # { user_id, org_id, role }
 
-            # 💡 superadmin får alltid passera
+            # superadmin får alltid passera
             if role and decoded.get("role") not in (role, "superadmin"):
                 return jsonify({"error": "Forbidden"}), 403
 
@@ -100,6 +68,30 @@ def require_auth(role=None):
 
 from werkzeug.exceptions import BadRequest
 
+# ---------------------- parse helpers ---------------------
+def parse_yyyy_mm_dd(s: str | None):
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+def parse_hh_mm(s: str | None):
+    if not s:
+        return None
+    try:
+        hh, mm = s.split(":")
+        return time(int(hh), int(mm))
+    except Exception:
+        return None
+
+# ---- E-post & XML ----
+import smtplib, ssl
+from email.message import EmailMessage
+import xml.etree.ElementTree as ET
+
+# ---------------------- /me -------------------------------
 @app.get("/me")
 @require_auth()
 def me():
@@ -125,6 +117,7 @@ def me():
     finally:
         db.close()
 
+# ---------------------- register org ----------------------
 @app.route("/register-organization", methods=["POST"])
 def register_organization():
     db = SessionLocal()
@@ -135,7 +128,6 @@ def register_organization():
             app.logger.exception("JSON parse failed in /register-organization")
             return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
 
-        # Snabb validering
         required = ["vat_number", "company_name", "address", "invoice_email", "name", "email", "password"]
         missing = [k for k in required if not data.get(k)]
         if missing:
@@ -173,125 +165,11 @@ def register_organization():
     except Exception as e:
         db.rollback()
         app.logger.exception("Register organization failed")
-        # Skicka tillbaka felet så vi ser det i PowerShell
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
 
-@app.route("/bookings", methods=["GET"])
-@require_auth()
-def get_bookings():
-    db = SessionLocal()
-    try:
-        q = db.query(Booking).order_by(Booking.created_at.desc())
-
-        if request.user["role"] == "superadmin":
-            # valfria filter om du vill:
-            org_id = request.args.get("org_id", type=int)
-            user_id = request.args.get("user_id", type=int)
-            if org_id:
-                q = q.filter(Booking.org_id == org_id)
-            if user_id:
-                q = q.filter(Booking.user_id == user_id)
-            rows = q.all()
-
-            # Prefetch orgs/users to avoid N+1
-            org_ids = {b.org_id for b in rows if b.org_id}
-            user_ids = {b.user_id for b in rows if b.user_id}
-
-            orgs = {o.id: o for o in db.query(Organization).filter(Organization.id.in_(org_ids)).all()} if org_ids else {}
-            users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
-
-            return jsonify([booking_to_dict(b, orgs.get(b.org_id), users.get(b.user_id)) for b in rows])
-
-        else:
-            rows = q.filter(Booking.org_id == request.user["org_id"]).all()
-
-        return jsonify([booking_to_dict(b) for b in rows])
-    finally:
-        db.close()
-
-# --- Validering av bokningsnummer (XX-LLL-#####) ---
-BOOKING_REGEX = re.compile(r"^[A-HJ-NP-TV-Z]{2}-[A-HJ-NP-TV-Z]{3}-\d{5}$")
-
-@app.get("/bookings/<booking_number>")
-@require_auth()
-def get_booking_by_number(booking_number: str):
-    code = (booking_number or "").upper()
-    if not BOOKING_REGEX.fullmatch(code):
-        return jsonify({"error": "Invalid booking number format"}), 400
-
-    db = SessionLocal()
-    try:
-        q = db.query(Booking).filter(Booking.booking_number == code)
-        if request.user["role"] != "superadmin":
-            q = q.filter(Booking.org_id == request.user["org_id"])
-        b = q.first()
-        if not b:
-            return jsonify({"error": "Not found"}), 404
-        return jsonify(booking_to_dict(b))
-    finally:
-        db.close()
-
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.get_json(force=True)
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.email == data["email"]).first()
-        if not user or not check_password_hash(user.password_hash, data["password"]):
-            return jsonify({"error": "Invalid credentials"}), 401
-
-        token = jwt.encode(
-            {
-                "user_id": user.id,
-                "org_id": user.org_id,
-                "role": user.role,
-                "exp": datetime.utcnow() + timedelta(hours=JWT_HOURS),
-            },
-            SECRET_KEY,
-            algorithm="HS256",
-        )
-        return jsonify({"token": token})
-    finally:
-        db.close()
-
-@app.get("/ping")
-def ping():
-    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
-
-@app.route("/invite-user", methods=["POST"])
-@require_auth()  # låt både admin & superadmin
-def invite_user():
-    data = request.get_json(force=True)
-    db = SessionLocal()
-    try:
-        if request.user["role"] == "superadmin":
-            target_org_id = data.get("org_id") or request.user["org_id"]
-        else:
-            target_org_id = request.user["org_id"]
-
-        user = User(
-            org_id=target_org_id,
-            name=data["name"],
-            email=data["email"],
-            password_hash=generate_password_hash(data["password"]),
-            role=data.get("role", "user"),
-        )
-        db.add(user)
-        db.commit()
-        return jsonify({"message": "User invited", "user_id": user.id}), 201
-    except IntegrityError:
-        db.rollback()
-        return jsonify({"error": "Email already exists"}), 400
-    finally:
-        db.close()
-
-# Läs in konfigurationsdata
-# with open("config.json", "r") as f:
-#    config = json.load(f)
-
-# 🔌 Skapa databasanslutning
+# ---------------------- DB setup --------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
@@ -300,13 +178,15 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 Base.metadata.create_all(bind=engine)
 
-# ---------- CONFIG: seed + fetch + validering ----------
-
+# ---------- CONFIG: seed + fetch + validering -------------
 def seed_published_config_from_file_if_empty():
     """Om ingen publicerad config finns i DB: läs config.json och publicera v1."""
     db = SessionLocal()
     try:
-        existing = db.query(PricingConfig).filter(PricingConfig.status == "published").order_by(PricingConfig.version.desc()).first()
+        existing = (db.query(PricingConfig)
+                    .filter(PricingConfig.status == "published")
+                    .order_by(PricingConfig.version.desc())
+                    .first())
         if existing:
             return
         with open("config.json", "r", encoding="utf-8") as f:
@@ -330,7 +210,6 @@ def seed_published_config_from_file_if_empty():
 
 seed_published_config_from_file_if_empty()
 
-
 def get_active_config(use: str = "published") -> Dict[str, Any]:
     """
     use='published' (default) → senaste publicerade
@@ -339,14 +218,19 @@ def get_active_config(use: str = "published") -> Dict[str, Any]:
     db = SessionLocal()
     try:
         if use == "draft":
-            draft = db.query(PricingConfig).filter(PricingConfig.status == "draft").order_by(PricingConfig.created_at.desc()).first()
+            draft = (db.query(PricingConfig)
+                     .filter(PricingConfig.status == "draft")
+                     .order_by(PricingConfig.created_at.desc())
+                     .first())
             if draft:
                 return draft.data
-        pub = db.query(PricingConfig).filter(PricingConfig.status == "published").order_by(PricingConfig.version.desc()).first()
+        pub = (db.query(PricingConfig)
+               .filter(PricingConfig.status == "published")
+               .order_by(PricingConfig.version.desc())
+               .first())
         return pub.data if pub else {}
     finally:
         db.close()
-
 
 # ------ Validering av config ------
 _range_pat = re.compile(r"^\d{2}(-\d{2})?$")
@@ -423,7 +307,6 @@ def validate_config(cfg: Dict[str, Any]) -> Tuple[bool, list]:
 
     return (len(errors) == 0), errors
 
-
 # ---------- Hjälpfunktioner: pris, tider, mm ----------
 def haversine(coord1, coord2):
     R = 6371
@@ -458,6 +341,7 @@ def address_to_dict(a):
         "opening_hours": a.opening_hours,
         "instructions": a.instructions,
     }
+
 def user_to_public(u):
     if not u: return None
     return {"id": u.id, "name": u.name, "email": u.email, "role": u.role}
@@ -466,7 +350,7 @@ def org_to_public(o):
     if not o: return None
     return {"id": o.id, "company_name": o.company_name, "vat_number": o.vat_number}
 
-def booking_to_dict(b):
+def booking_to_dict(b, org=None, user=None):
     return {
         "id": b.id,
         "booking_number": getattr(b, "booking_number", None),
@@ -509,11 +393,126 @@ def booking_to_dict(b):
         "sender_address": address_to_dict(b.sender_address),
         "receiver_address": address_to_dict(b.receiver_address),
 
-        # 👇 new
+        # Enrichment for admin UI
         "organization": org_to_public(org),
         "booked_by": user_to_public(user),
     }
 
+# ---------------------- bookings list --------------------
+@app.route("/bookings", methods=["GET"])
+@require_auth()
+def get_bookings():
+    db = SessionLocal()
+    try:
+        q = db.query(Booking).order_by(Booking.created_at.desc())
+
+        if request.user["role"] == "superadmin":
+            org_id = request.args.get("org_id", type=int)
+            user_id = request.args.get("user_id", type=int)
+            if org_id:
+                q = q.filter(Booking.org_id == org_id)
+            if user_id:
+                q = q.filter(Booking.user_id == user_id)
+
+            rows = q.all()
+
+            # Prefetch orgs/users to avoid N+1
+            org_ids = {b.org_id for b in rows if b.org_id}
+            user_ids = {b.user_id for b in rows if b.user_id}
+
+            orgs = {o.id: o for o in db.query(Organization).filter(Organization.id.in_(org_ids)).all()} if org_ids else {}
+            users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+
+            return jsonify([booking_to_dict(b, orgs.get(b.org_id), users.get(b.user_id)) for b in rows])
+        else:
+            rows = q.filter(Booking.org_id == request.user["org_id"]).all()
+            # För icke-superadmin behövs inte enrichment
+            return jsonify([booking_to_dict(b) for b in rows])
+    finally:
+        db.close()
+
+# --- Validering av bokningsnummer (XX-LLL-#####) ---
+BOOKING_REGEX = re.compile(r"^[A-HJ-NP-TV-Z]{2}-[A-HJ-NP-TV-Z]{3}-\d{5}$")
+
+@app.get("/bookings/<booking_number>")
+@require_auth()
+def get_booking_by_number(booking_number: str):
+    code = (booking_number or "").upper()
+    if not BOOKING_REGEX.fullmatch(code):
+        return jsonify({"error": "Invalid booking number format"}), 400
+
+    db = SessionLocal()
+    try:
+        q = db.query(Booking).filter(Booking.booking_number == code)
+        if request.user["role"] != "superadmin":
+            q = q.filter(Booking.org_id == request.user["org_id"])
+        b = q.first()
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+
+        org = db.query(Organization).filter(Organization.id == b.org_id).first()
+        user = db.query(User).filter(User.id == b.user_id).first()
+        return jsonify(booking_to_dict(b, org, user))
+    finally:
+        db.close()
+
+# ---------------------- login ----------------------------
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json(force=True)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == data["email"]).first()
+        if not user or not check_password_hash(user.password_hash, data["password"]):
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        token = jwt.encode(
+            {
+                "user_id": user.id,
+                "org_id": user.org_id,
+                "role": user.role,
+                "exp": datetime.utcnow() + timedelta(hours=JWT_HOURS),
+            },
+            SECRET_KEY,
+            algorithm="HS256",
+        )
+        return jsonify({"token": token})
+    finally:
+        db.close()
+
+@app.get("/ping")
+def ping():
+    return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
+
+# ---------------------- invite user ----------------------
+@app.route("/invite-user", methods=["POST"])
+@require_auth()  # låt både admin & superadmin
+def invite_user():
+    data = request.get_json(force=True)
+    db = SessionLocal()
+    try:
+        if request.user["role"] == "superadmin":
+            target_org_id = data.get("org_id") or request.user["org_id"]
+        else:
+            target_org_id = request.user["org_id"]
+
+        user = User(
+            org_id=target_org_id,
+            name=data["name"],
+            email=data["email"],
+            password_hash=generate_password_hash(data["password"]),
+            role=data.get("role", "user"),
+        )
+        db.add(user)
+        db.commit()
+        return jsonify({"message": "User invited", "user_id": user.id}), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"error": "Email already exists"}), 400
+    finally:
+        db.close()
+
+# ---------- Pris-endpoint ----------
 def is_zone_allowed(country, postal_prefix, available_zones):
     if country not in available_zones:
         return False
@@ -583,7 +582,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         now_utc = datetime.utcnow()
         tz_name = pytz.country_timezones[pickup_country.upper()][0]
         now_local = now_utc.replace(tzinfo=pytz.utc).astimezone(pytz.timezone(tz_name))
-    except:
+    except Exception:
         now_local = datetime.utcnow()
 
     cutoff_hour = mode_config.get("cutoff_hour", 10)
@@ -592,7 +591,7 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
 
     try:
         country_holidays = holidays.country_holidays(pickup_country.upper())
-    except:
+    except Exception:
         country_holidays = []
 
     pickup_date = now_local.date()
@@ -615,7 +614,6 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "co2_emissions_grams": co2_grams, "description": mode_config.get("description", "")
     }
 
-# ---------- Pris-endpoint ----------
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.json
@@ -630,7 +628,6 @@ def calculate():
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
-    # HÄMTA PUBLICERAD CONFIG FRÅN DB
     active_cfg = get_active_config(use="published")
 
     results = {}
@@ -642,10 +639,8 @@ def calculate():
         )
     return jsonify(results)
 
-
-# ---------- NYTT: Bokningsnummer-generator ----------
-# Format: XX-LLL-##### (2 bokstäver – 3 bokstäver – 5 siffror), utan I,O,Q,U
-LETTERS = "ABCDEFGHJKMNPQRSTVWXYZ"  # 24 tecken
+# ---------- Bokningsnummer-generator ----------
+LETTERS = "ABCDEFGHJKMNPQRSTVWXYZ"
 DIGITS = "0123456789"
 
 def generate_booking_number() -> str:
@@ -655,17 +650,17 @@ def generate_booking_number() -> str:
     p3 = "".join(secrets.choice(DIGITS)  for _ in range(5))
     return f"{p1}-{p2}-{p3}"
 
-# ---------- NYTT: Booking endpoint ----------
+# ---------- Booking endpoint ----------
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "no-reply@easyfreightbooking.com")
 INTERNAL_BOOKING_EMAIL = os.getenv("INTERNAL_BOOKING_EMAIL", "henrik.malmberg@begoma.se")
-EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"   # <— NYTT
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
 
 @app.post("/book")
-@require_auth()  # <— viktigt
+@require_auth()
 def book():
     db = SessionLocal()
     try:
@@ -699,22 +694,22 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-        # 3) Spara adresser först (egen commit) så de inte rullas tillbaka vid ev. nummerkrock
+        # 3) Spara adresser först
         sender = mk_addr(data.get("pickup", {}) or {}, "sender")
         receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
         db.add(sender); db.add(receiver)
-        db.commit()  # adresserna får permanenta id:n
+        db.commit()  # adresserna får id
 
         # Hämta org_id från token
         org_id = request.user["org_id"]
 
-        # Läs requested datum/tider (nya fält om de finns i payload)
+        # Läs requested datum/tider
         loading_req_date = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
         loading_req_time = parse_hh_mm(data.get("requested_pickup_time"))
         unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
         unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
 
-        # 4) Skapa bokning med unikt bokningsnummer (retry vid krock)
+        # 4) Skapa bokning med unikt nummer
         booking_obj = None
         for _ in range(7):
             bn = generate_booking_number()
@@ -724,9 +719,9 @@ def book():
                 org_id=org_id,
                 selected_mode=data.get("selected_mode"),
                 price_eur=float(data.get("price_eur") or 0.0),
-                pickup_date=None,  # om du inte har säkert UTC-datum
+                pickup_date=None,
                 transit_time_days=str(data.get("transit_time_days") or ""),
-                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # grams -> kg
+                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,  # g -> kg
 
                 sender_address_id=sender.id,
                 receiver_address_id=receiver.id,
@@ -734,19 +729,15 @@ def book():
                 references=data.get("references"),
                 addons=data.get("addons"),
 
-                # Legacy-flaggor kvar för bakåtkompat
                 asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
 
-                # Nya requested-fält
                 loading_requested_date=loading_req_date,
                 loading_requested_time=loading_req_time,
                 unloading_requested_date=unloading_req_date,
                 unloading_requested_time=unloading_req_time,
-
-                # status & booking_date hanteras av defaults i DB/modellen
             )
             db.add(b)
             try:
@@ -758,13 +749,12 @@ def book():
                 continue
 
         if not booking_obj:
-            # adresser kvar men ingen bokning – rapportera tydligt
             raise RuntimeError("Could not allocate a unique booking number after several attempts")
 
         booking_id = booking_obj.id
         booking_number = booking_obj.booking_number
 
-        # 5) E-post (valfritt, styrs av EMAIL_ENABLED)
+        # 5) E-post (valfritt)
         to_confirm = set()
         if data.get("booker", {}).get("email"):
             to_confirm.add(data["booker"]["email"])
@@ -806,10 +796,6 @@ def book():
     finally:
         db.close()
 
-
-
-
-
 # ---------- PATCH: uppdatera plan/utfall/status ----------
 @app.patch("/bookings/<bid>")
 @require_auth(role="admin")
@@ -824,12 +810,9 @@ def update_booking(bid):
 
         data = request.get_json(force=True) or {}
 
-        # Låsning: booking_date får inte ändras via API
         if "booking_date" in data:
             data.pop("booking_date", None)
 
-        # Tillåtna fält: planned/actual + status
-        # Requested kan också uppdateras om du vill – här tillåter vi det.
         def set_date(attr, key):
             if key in data:
                 setattr(b, attr, parse_yyyy_mm_dd(data.get(key)) if data.get(key) else None)
@@ -854,11 +837,9 @@ def update_booking(bid):
         set_date("unloading_actual_date", "unloading_actual_date")
         set_time("unloading_actual_time", "unloading_actual_time")
 
-        # Auto-statusregler (så länge inte CANCELLED/EXCEPTION manuellt satts i samma payload)
+        # Auto-statusregler
         manual_status = data.get("status")
-        if not manual_status or manual_status not in {
-            "CANCELLED", "EXCEPTION"
-        }:
+        if not manual_status or manual_status not in {"CANCELLED", "EXCEPTION"}:
             if b.loading_planned_date or b.loading_planned_time:
                 if b.status in (None, "NEW", "CONFIRMED"):
                     b.status = "PICKUP_PLANNED"
@@ -872,7 +853,6 @@ def update_booking(bid):
                 if b.status not in ("CANCELLED", "EXCEPTION"):
                     b.status = "DELIVERED"
 
-        # Manuell status-override, om giltig
         if manual_status:
             allowed = {
                 "NEW","CONFIRMED","PICKUP_PLANNED","PICKED_UP","IN_TRANSIT",
@@ -894,7 +874,10 @@ def update_booking(bid):
                 return jsonify({"error": "Actual unloading cannot be before actual loading"}), 400
 
         db.commit()
-        return jsonify(booking_to_dict(b))
+
+        org = db.query(Organization).filter(Organization.id == b.org_id).first()
+        user = db.query(User).filter(User.id == b.user_id).first()
+        return jsonify(booking_to_dict(b, org, user))
     except BadRequest as e:
         db.rollback()
         return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
@@ -906,14 +889,19 @@ def update_booking(bid):
         db.close()
 
 # ---------- ADMIN: Pricing config (superadmin only) ----------
-
 @app.get("/admin/config")
 @require_auth("superadmin")
 def admin_get_config():
     db = SessionLocal()
     try:
-        pub = db.query(PricingConfig).filter(PricingConfig.status=="published").order_by(PricingConfig.version.desc()).first()
-        draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").order_by(PricingConfig.created_at.desc()).first()
+        pub = (db.query(PricingConfig)
+               .filter(PricingConfig.status=="published")
+               .order_by(PricingConfig.version.desc())
+               .first())
+        draft = (db.query(PricingConfig)
+                 .filter(PricingConfig.status=="draft")
+                 .order_by(PricingConfig.created_at.desc())
+                 .first())
         return jsonify({
             "published": {"version": pub.version if pub else None, "data": pub.data if pub else None},
             "draft": {"version": draft.version if draft else None, "data": draft.data if draft else None}
@@ -968,7 +956,7 @@ def admin_validate():
 def admin_publish():
     payload = request.get_json(silent=True) or {}
     comment = payload.get("comment")
-    effective_at = None  # MVP: publicera direkt
+    effective_at = None  # publicera direkt
 
     db = SessionLocal()
     try:
@@ -976,7 +964,6 @@ def admin_publish():
         if not draft:
             return jsonify({"ok": False, "error": "No draft to publish"}), 400
 
-        # validera innan publish
         ok, errs = validate_config(draft.data)
         if not ok:
             return jsonify({"ok": False, "errors": errs}), 400
@@ -992,7 +979,6 @@ def admin_publish():
             effective_at=effective_at
         )
         db.add(new_pub)
-        # rensa draft (enklast: ta bort)
         db.delete(draft)
         db.commit()
         return jsonify({"ok": True, "version": new_pub.version})
@@ -1025,10 +1011,11 @@ def admin_rollback(version: int):
     """Skapar/ersätter draft som kopia av en publicerad version."""
     db = SessionLocal()
     try:
-        src = db.query(PricingConfig).filter(PricingConfig.status=="published", PricingConfig.version==version).first()
+        src = (db.query(PricingConfig)
+               .filter(PricingConfig.status=="published", PricingConfig.version==version)
+               .first())
         if not src:
             return jsonify({"ok": False, "error": "Version not found"}), 404
-        # ersätt/skapad draft
         draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").first()
         if draft:
             draft.data = src.data
@@ -1075,8 +1062,6 @@ def admin_calculate_preview():
     ) for mode in cfg}
     return jsonify(results)
 
-
-
 # ---------- E-post & XML-hjälpare ----------
 def send_email(to: str, subject: str, body: str, attachments: list[tuple[str, str, bytes]]):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
@@ -1102,7 +1087,7 @@ def build_booking_xml(d: dict) -> bytes:
     def cm_to_m(x):
         try:
             return float(x) / 100.0
-        except:
+        except Exception:
             return 0.0
 
     root = ET.Element("CreateBooking")

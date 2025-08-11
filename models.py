@@ -153,3 +153,27 @@ class Booking(Base):
 
     sender_address = relationship("Address", foreign_keys=[sender_address_id], back_populates="bookings_as_sender")
     receiver_address = relationship("Address", foreign_keys=[receiver_address_id], back_populates="bookings_as_receiver")
+
+# models.py (tillägg längst ner)
+
+from sqlalchemy import Column, String, Integer, DateTime, ForeignKey, Text, JSON
+from sqlalchemy.sql import func
+
+# ...
+
+class PricingConfig(Base):
+    __tablename__ = "pricing_configs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    # status: 'published' eller 'draft'
+    status = Column(String, nullable=False)
+    # version: sätts på publicerade rader (draft kan vara NULL)
+    version = Column(Integer, nullable=True)
+
+    data = Column(JSON, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    comment = Column(Text, nullable=True)
+    effective_at = Column(DateTime(timezone=True), nullable=True)
+

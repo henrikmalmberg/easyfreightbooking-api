@@ -630,16 +630,27 @@ def calculate():
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
-    active_cfg = get_active_config(use="published")
+    active_cfg = get_active_config(use="published") or {}
 
     results = {}
-    for mode in active_cfg:
-        results[mode] = calculate_for_mode(
-            active_cfg[mode], pickup_coord, delivery_coord,
-            pickup_country, pickup_postal, delivery_country, delivery_postal,
-            weight, mode_name=mode
-        )
+    for mode, cfg in active_cfg.items():
+        try:
+            results[mode] = calculate_for_mode(
+                cfg, pickup_coord, delivery_coord,
+                pickup_country, pickup_postal, delivery_country, delivery_postal,
+                weight, mode_name=mode
+            )
+        except Exception as e:
+            # Logga men döda inte hela svaret
+            app.logger.exception("calculate_for_mode failed for %s", mode)
+            results[mode] = {
+                "available": False,
+                "status": "error",
+                "error": str(e)
+            }
+
     return jsonify(results)
+
 
 # =========================================================
 # Booking number generator + /book

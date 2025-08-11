@@ -19,6 +19,9 @@ from werkzeug.exceptions import BadRequest
 import smtplib, ssl
 from email.message import EmailMessage
 import xml.etree.ElementTree as ET
+import requests
+from xml.etree import ElementTree as XET
+
 
 # =========================================================
 # App + CORS
@@ -115,6 +118,60 @@ def login():
     finally:
         db.close()
 
+def normalize_vat(v: str) -> str:
+    """ Uppercase + ta bort mellanslag/tecken. """
+    return re.sub(r"[^A-Za-z0-9]", "", (v or "")).upper()
+
+def is_vat_format(v: str) -> bool:
+    """ Grov formatkoll: CC + 2–12 tecken. Detaljkontroller görs ev. mot VIES. """
+    return bool(re.match(r"^[A-Z]{2}[A-Z0-9]{2,12}$", v or ""))
+
+VIES_ENABLED = os.getenv("VIES_ENABLED", "true").lower() == "true"
+
+def vies_check(vat: str) -> tuple[bool, str | None]:
+    """
+    Kolla VAT mot EU VIES (best effort). Returnerar (valid, err_msg).
+    Faller tillbaka till OK vid nätfel/timeouts.
+    """
+    if not is_vat_format(vat):
+        return False, "Invalid VAT format"
+
+    if not VIES_ENABLED:
+        return True, None
+
+    country = vat[:2]
+    number = vat[2:]
+    # Officiell SOAP endpoint:
+    url = "https://ec.europa.eu/taxation_customs/vies/services/checkVatService"
+    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+    <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                   xmlns:tns="urn:ec.europa.eu:taxud:vies:services:checkVat:types">
+      <soap:Body>
+        <tns:checkVat>
+          <tns:countryCode>{country}</tns:countryCode>
+          <tns:vatNumber>{number}</tns:vatNumber>
+        </tns:checkVat>
+      </soap:Body>
+    </soap:Envelope>"""
+    try:
+        r = requests.post(url, data=envelope.encode("utf-8"),
+                          headers={"Content-Type": "text/xml; charset=utf-8"},
+                          timeout=8)
+        r.raise_for_status()
+        # Enkel parse: leta <valid>true</valid>
+        valid = "<valid>true</valid>" in r.text
+        return (True, None) if valid else (False, "VAT not found in VIES")
+    except Exception as e:
+        app.logger.warning("VIES check skipped (%s)", e)
+        # Nätfel => tillåt (vi gör formatkoll + unikhet oavsett)
+        return True, None
+
+
+
+
+
+
+
 @app.route("/register-organization", methods=["POST"])
 def register_organization():
     db = SessionLocal()
@@ -130,18 +187,48 @@ def register_organization():
         if missing:
             return jsonify({"error": "Missing required fields", "fields": missing}), 400
 
-        app.logger.info("Register org start vat=%s email=%s", data["vat_number"], data["email"])
+        # 1) Normalisera & validera VAT
+        nvat = normalize_vat(data["vat_number"])
+        if not is_vat_format(nvat):
+            return jsonify({"error": "Invalid VAT format", "field": "vat_number"}), 400
 
+        valid, vmsg = vies_check(nvat)
+        if not valid:
+            return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+
+        # 2) Finns organisationen redan? -> returnera admin-kontakt
+        existing_org = db.query(Organization).filter(Organization.vat_number == nvat).first()
+        if existing_org:
+            admin = (
+                db.query(User)
+                  .filter(User.org_id == existing_org.id, User.role.in_(["admin"]))
+                  .order_by(User.id.asc())
+                  .first()
+            )
+            admin_info = {"name": admin.name, "email": admin.email} if admin else None
+            return jsonify({
+                "error": "Organization already exists",
+                "admin": admin_info
+            }), 409  # Conflict
+
+        # 3) Finns e-post redan?
+        existing_user = db.query(User).filter(User.email == data["email"]).first()
+        if existing_user:
+            return jsonify({"error": "Email already in use", "field": "email"}), 409
+
+        app.logger.info("Register org start vat=%s email=%s", nvat, data["email"])
+
+        # 4) Skapa org (tvinga default på betalvillkor/valuta)
         org = Organization(
-            vat_number=data["vat_number"],
+            vat_number=nvat,
             company_name=data["company_name"],
             address=data["address"],
             invoice_email=data["invoice_email"],
-            payment_terms_days=int(data.get("payment_terms_days", 10)),
-            currency=data.get("currency", "EUR"),
+            payment_terms_days=10,   # default, ej redigerbart här
+            currency="EUR",          # default, ej redigerbart här
         )
         db.add(org)
-        db.flush()  # get org.id
+        db.flush()  # org.id
 
         user = User(
             org_id=org.id,
@@ -152,19 +239,17 @@ def register_organization():
         )
         db.add(user)
         db.commit()
+
         app.logger.info("Register org OK org_id=%s user_id=%s", org.id, user.id)
         return jsonify({"message": "Organization and admin created", "org_id": org.id}), 201
 
-    except IntegrityError:
-        db.rollback()
-        app.logger.warning("IntegrityError on register (duplicate VAT or email)")
-        return jsonify({"error": "VAT number or email already exists"}), 400
-    except Exception as e:
+    except Exception:
         db.rollback()
         app.logger.exception("Register organization failed")
-        return jsonify({"error": "Server error", "detail": str(e)}), 500
+        return jsonify({"error": "Server error"}), 500
     finally:
         db.close()
+
 
 # =========================================================
 # DB setup

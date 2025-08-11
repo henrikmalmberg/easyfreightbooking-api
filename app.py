@@ -176,6 +176,16 @@ def get_bookings():
             if user_id:
                 q = q.filter(Booking.user_id == user_id)
             rows = q.all()
+
+            # Prefetch orgs/users to avoid N+1
+            org_ids = {b.org_id for b in rows if b.org_id}
+            user_ids = {b.user_id for b in rows if b.user_id}
+
+            orgs = {o.id: o for o in db.query(Organization).filter(Organization.id.in_(org_ids)).all()} if org_ids else {}
+            users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+
+            return jsonify([booking_to_dict(b, orgs.get(b.org_id), users.get(b.user_id)) for b in rows])
+
         else:
             rows = q.filter(Booking.org_id == request.user["org_id"]).all()
 

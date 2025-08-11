@@ -9,6 +9,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import IntegrityError
 from models import Base, Address, Booking, Organization, User
+import re
+from typing import Tuple, Dict, Any
+from sqlalchemy import func as sa_func
+from models import PricingConfig  # ← ny
+
 
 import os, jwt, re
 from functools import wraps
@@ -250,8 +255,8 @@ def invite_user():
         db.close()
 
 # Läs in konfigurationsdata
-with open("config.json", "r") as f:
-    config = json.load(f)
+# with open("config.json", "r") as f:
+#    config = json.load(f)
 
 # 🔌 Skapa databasanslutning
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -261,6 +266,130 @@ if not DATABASE_URL:
 engine = create_engine(DATABASE_URL)
 SessionLocal = scoped_session(sessionmaker(autocommit=False, autoflush=False, bind=engine))
 Base.metadata.create_all(bind=engine)
+
+# ---------- CONFIG: seed + fetch + validering ----------
+
+def seed_published_config_from_file_if_empty():
+    """Om ingen publicerad config finns i DB: läs config.json och publicera v1."""
+    db = SessionLocal()
+    try:
+        existing = db.query(PricingConfig).filter(PricingConfig.status == "published").order_by(PricingConfig.version.desc()).first()
+        if existing:
+            return
+        with open("config.json", "r", encoding="utf-8") as f:
+            file_cfg = json.load(f)
+        row = PricingConfig(
+            id=generate_uuid(),
+            status="published",
+            version=1,
+            data=file_cfg,
+            created_by=None,
+            comment="Seed from config.json"
+        )
+        db.add(row)
+        db.commit()
+        app.logger.info("Seeded published pricing config v1 from config.json")
+    except Exception:
+        db.rollback()
+        app.logger.exception("Failed to seed published config")
+    finally:
+        db.close()
+
+seed_published_config_from_file_if_empty()
+
+
+def get_active_config(use: str = "published") -> Dict[str, Any]:
+    """
+    use='published' (default) → senaste publicerade
+    use='draft' → aktuell draft om finns, annars senaste publicerade
+    """
+    db = SessionLocal()
+    try:
+        if use == "draft":
+            draft = db.query(PricingConfig).filter(PricingConfig.status == "draft").order_by(PricingConfig.created_at.desc()).first()
+            if draft:
+                return draft.data
+        pub = db.query(PricingConfig).filter(PricingConfig.status == "published").order_by(PricingConfig.version.desc()).first()
+        return pub.data if pub else {}
+    finally:
+        db.close()
+
+
+# ------ Validering av config ------
+_range_pat = re.compile(r"^\d{2}(-\d{2})?$")
+_cc_pat = re.compile(r"^[A-Z]{2}$")
+_pair_pat = re.compile(r"^[A-Z]{2}-[A-Z]{2}$")
+
+def _num(x, name, errors, minv=None, maxv=None):
+    if not isinstance(x, (int, float)):
+        errors.append(f"{name} must be number")
+        return
+    if minv is not None and x < minv: errors.append(f"{name} must be >= {minv}")
+    if maxv is not None and x > maxv: errors.append(f"{name} must be <= {maxv}")
+
+def validate_config(cfg: Dict[str, Any]) -> Tuple[bool, list]:
+    errors = []
+    if not isinstance(cfg, dict) or not cfg:
+        return False, ["Config root must be a non-empty object"]
+
+    for mode_key, mode in cfg.items():
+        if not isinstance(mode, dict):
+            errors.append(f"{mode_key}: must be object")
+            continue
+
+        required = [
+            "label","km_price_eur","co2_per_ton_km","max_weight_kg","default_breakpoint",
+            "min_allowed_weight_kg","max_allowed_weight_kg","p1","price_p1","p2","p2k","p2m",
+            "p3","p3k","p3m","transit_speed_kmpd","cutoff_hour","extra_pickup_days",
+            "available_zones","balance_factors"
+        ]
+        for r in required:
+            if r not in mode:
+                errors.append(f"{mode_key}.{r} missing")
+
+        # Numbers
+        for n in ["km_price_eur","co2_per_ton_km","max_weight_kg","default_breakpoint",
+                  "min_allowed_weight_kg","max_allowed_weight_kg","p1","price_p1","p2","p2k","p2m",
+                  "p3","p3k","p3m","transit_speed_kmpd","cutoff_hour","extra_pickup_days"]:
+            if n in mode:
+                _num(mode[n], f"{mode_key}.{n}", errors, minv=0)
+
+        # Relations
+        if all(k in mode for k in ["min_allowed_weight_kg","max_allowed_weight_kg"]):
+            if mode["min_allowed_weight_kg"] > mode["max_allowed_weight_kg"]:
+                errors.append(f"{mode_key}: min_allowed_weight_kg > max_allowed_weight_kg")
+        if all(k in mode for k in ["default_breakpoint","max_weight_kg"]):
+            if mode["default_breakpoint"] > mode["max_weight_kg"]:
+                errors.append(f"{mode_key}: default_breakpoint > max_weight_kg")
+
+        # available_zones
+        az = mode.get("available_zones", {})
+        if not isinstance(az, dict) or not az:
+            errors.append(f"{mode_key}.available_zones must be object")
+        else:
+            for cc, ranges in az.items():
+                if not _cc_pat.match(cc or ""):
+                    errors.append(f"{mode_key}.available_zones[{cc}] invalid country")
+                if not isinstance(ranges, list) or not ranges:
+                    errors.append(f"{mode_key}.available_zones[{cc}] must be non-empty list")
+                else:
+                    for r in ranges:
+                        if not _range_pat.match(str(r)):
+                            errors.append(f"{mode_key}.available_zones[{cc}] bad range '{r}'")
+
+        # balance_factors
+        bf = mode.get("balance_factors", {})
+        if not isinstance(bf, dict):
+            errors.append(f"{mode_key}.balance_factors must be object")
+        else:
+            for pair, val in bf.items():
+                if not _pair_pat.match(pair or ""):
+                    errors.append(f"{mode_key}.balance_factors key '{pair}' must be CC-CC")
+                if not isinstance(val, (int, float)) or val <= 0:
+                    errors.append(f"{mode_key}.balance_factors[{pair}] must be > 0")
+
+    return (len(errors) == 0), errors
+
 
 # ---------- Hjälpfunktioner: pris, tider, mm ----------
 def haversine(coord1, coord2):
@@ -457,14 +586,18 @@ def calculate():
     except (KeyError, ValueError):
         return jsonify({"error": "Missing or invalid input"}), 400
 
+    # HÄMTA PUBLICERAD CONFIG FRÅN DB
+    active_cfg = get_active_config(use="published")
+
     results = {}
-    for mode in config:
+    for mode in active_cfg:
         results[mode] = calculate_for_mode(
-            config[mode], pickup_coord, delivery_coord,
+            active_cfg[mode], pickup_coord, delivery_coord,
             pickup_country, pickup_postal, delivery_country, delivery_postal,
             weight, mode_name=mode
         )
     return jsonify(results)
+
 
 # ---------- NYTT: Bokningsnummer-generator ----------
 # Format: XX-LLL-##### (2 bokstäver – 3 bokstäver – 5 siffror), utan I,O,Q,U
@@ -723,6 +856,178 @@ def update_booking(bid):
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
+
+# ---------- ADMIN: Pricing config (superadmin only) ----------
+
+@app.get("/admin/config")
+@require_auth("superadmin")
+def admin_get_config():
+    db = SessionLocal()
+    try:
+        pub = db.query(PricingConfig).filter(PricingConfig.status=="published").order_by(PricingConfig.version.desc()).first()
+        draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").order_by(PricingConfig.created_at.desc()).first()
+        return jsonify({
+            "published": {"version": pub.version if pub else None, "data": pub.data if pub else None},
+            "draft": {"version": draft.version if draft else None, "data": draft.data if draft else None}
+        })
+    finally:
+        db.close()
+
+@app.put("/admin/config/draft")
+@require_auth("superadmin")
+def admin_put_draft():
+    payload = request.get_json(force=True)
+    cfg = payload if isinstance(payload, dict) else payload.get("data")
+    ok, errs = validate_config(cfg)
+    if not ok:
+        return jsonify({"ok": False, "errors": errs}), 400
+
+    db = SessionLocal()
+    try:
+        draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").first()
+        if draft:
+            draft.data = cfg
+        else:
+            draft = PricingConfig(
+                id=generate_uuid(),
+                status="draft",
+                version=None,
+                data=cfg,
+                created_by=request.user.get("user_id")
+            )
+            db.add(draft)
+        db.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("put draft failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+@app.post("/admin/config/validate")
+@require_auth("superadmin")
+def admin_validate():
+    payload = request.get_json(silent=True) or {}
+    cfg = payload.get("data")
+    if cfg is None:
+        cfg = get_active_config(use="draft") or get_active_config(use="published")
+    ok, errs = validate_config(cfg)
+    return jsonify({"ok": ok, "errors": errs})
+
+@app.post("/admin/config/publish")
+@require_auth("superadmin")
+def admin_publish():
+    payload = request.get_json(silent=True) or {}
+    comment = payload.get("comment")
+    effective_at = None  # MVP: publicera direkt
+
+    db = SessionLocal()
+    try:
+        draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").first()
+        if not draft:
+            return jsonify({"ok": False, "error": "No draft to publish"}), 400
+
+        # validera innan publish
+        ok, errs = validate_config(draft.data)
+        if not ok:
+            return jsonify({"ok": False, "errors": errs}), 400
+
+        max_v = db.query(sa_func.max(PricingConfig.version)).filter(PricingConfig.status=="published").scalar() or 0
+        new_pub = PricingConfig(
+            id=generate_uuid(),
+            status="published",
+            version=max_v + 1,
+            data=draft.data,
+            created_by=request.user.get("user_id"),
+            comment=comment,
+            effective_at=effective_at
+        )
+        db.add(new_pub)
+        # rensa draft (enklast: ta bort)
+        db.delete(draft)
+        db.commit()
+        return jsonify({"ok": True, "version": new_pub.version})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("publish failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+@app.get("/admin/config/history")
+@require_auth("superadmin")
+def admin_history():
+    db = SessionLocal()
+    try:
+        rows = (db.query(PricingConfig)
+                .filter(PricingConfig.status=="published")
+                .order_by(PricingConfig.version.desc())
+                .all())
+        return jsonify([{
+            "id": r.id, "version": r.version, "created_at": r.created_at.isoformat(),
+            "created_by": r.created_by, "comment": r.comment
+        } for r in rows])
+    finally:
+        db.close()
+
+@app.post("/admin/config/rollback/<int:version>")
+@require_auth("superadmin")
+def admin_rollback(version: int):
+    """Skapar/ersätter draft som kopia av en publicerad version."""
+    db = SessionLocal()
+    try:
+        src = db.query(PricingConfig).filter(PricingConfig.status=="published", PricingConfig.version==version).first()
+        if not src:
+            return jsonify({"ok": False, "error": "Version not found"}), 404
+        # ersätt/skapad draft
+        draft = db.query(PricingConfig).filter(PricingConfig.status=="draft").first()
+        if draft:
+            draft.data = src.data
+            draft.created_by = request.user.get("user_id")
+        else:
+            draft = PricingConfig(
+                id=generate_uuid(),
+                status="draft",
+                version=None,
+                data=src.data,
+                created_by=request.user.get("user_id")
+            )
+            db.add(draft)
+        db.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("rollback failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        db.close()
+
+@app.post("/admin/calculate")
+@require_auth("superadmin")
+def admin_calculate_preview():
+    """Som /calculate men använder draft om den finns."""
+    data = request.json or {}
+    try:
+        pickup_coord = data["pickup_coordinate"]
+        pickup_country = data["pickup_country"]
+        pickup_postal = data["pickup_postal_prefix"]
+        delivery_coord = data["delivery_coordinate"]
+        delivery_country = data["delivery_country"]
+        delivery_postal = data["delivery_postal_prefix"]
+        weight = float(data["chargeable_weight"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "Missing or invalid input"}), 400
+
+    cfg = get_active_config(use="draft") or get_active_config(use="published")
+    results = {mode: calculate_for_mode(
+        cfg[mode], pickup_coord, delivery_coord,
+        pickup_country, pickup_postal, delivery_country, delivery_postal,
+        weight, mode_name=mode
+    ) for mode in cfg}
+    return jsonify(results)
+
+
 
 # ---------- E-post & XML-hjälpare ----------
 def send_email(to: str, subject: str, body: str, attachments: list[tuple[str, str, bytes]]):

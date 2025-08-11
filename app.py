@@ -430,6 +430,13 @@ def address_to_dict(a):
         "opening_hours": a.opening_hours,
         "instructions": a.instructions,
     }
+def user_to_public(u):
+    if not u: return None
+    return {"id": u.id, "name": u.name, "email": u.email, "role": u.role}
+
+def org_to_public(o):
+    if not o: return None
+    return {"id": o.id, "company_name": o.company_name, "vat_number": o.vat_number}
 
 def booking_to_dict(b):
     return {
@@ -473,6 +480,10 @@ def booking_to_dict(b):
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "sender_address": address_to_dict(b.sender_address),
         "receiver_address": address_to_dict(b.receiver_address),
+
+        # 👇 new
+        "organization": org_to_public(org),
+        "booked_by": user_to_public(user),
     }
 
 def is_zone_allowed(country, postal_prefix, available_zones):

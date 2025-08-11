@@ -762,6 +762,60 @@ def book():
     finally:
         db.close()
 
+# ===== Admin config (superadmin only) ==================================
+# Enkel "MVP": använder filinnehållet som 'published' och håller 'draft' i minnet
+CONFIG_DRAFT = None
+CONFIG_VERSION = 1  # bumpa när du publicerar om du vill visa version
+
+@app.get("/admin/config")
+@require_auth("superadmin")
+def admin_get_config():
+    return jsonify({
+        "published": {"version": CONFIG_VERSION, "data": config},
+        "draft": ({"version": CONFIG_VERSION, "data": CONFIG_DRAFT} if CONFIG_DRAFT else None),
+    })
+
+@app.put("/admin/config/draft")
+@require_auth("superadmin")
+def admin_put_draft():
+    global CONFIG_DRAFT
+    try:
+        CONFIG_DRAFT = request.get_json(force=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.post("/admin/config/validate")
+@require_auth("superadmin")
+def admin_validate():
+    # Basvalidering – lägg gärna till fler checks
+    payload = request.get_json(force=True) or {}
+    data = payload.get("data")
+    if not isinstance(data, dict) or not data:
+        return jsonify({"ok": False, "errors": ["Config is empty or not an object"]})
+    # exempel: kräver km_price_eur på varje mode
+    missing = []
+    for mode, cfg in data.items():
+        if "km_price_eur" not in (cfg or {}):
+            missing.append(f"{mode}: missing km_price_eur")
+    if missing:
+        return jsonify({"ok": False, "errors": missing})
+    return jsonify({"ok": True})
+
+@app.post("/admin/config/publish")
+@require_auth("superadmin")
+def admin_publish():
+    global config, CONFIG_DRAFT, CONFIG_VERSION
+    # Publicera den senast sparade draften (eller returnera fel om ingen finns)
+    if CONFIG_DRAFT is None:
+        return jsonify({"ok": False, "error": "No draft to publish"}), 400
+    config = CONFIG_DRAFT  # ersätt den inlästa fil-konfigurationen i minnet
+    CONFIG_DRAFT = None
+    CONFIG_VERSION += 1
+    return jsonify({"ok": True, "version": CONFIG_VERSION})
+
+
+
 # ---------- PATCH: uppdatera plan/utfall/status ----------
 @app.patch("/bookings/<bid>")
 @require_auth(role="admin")

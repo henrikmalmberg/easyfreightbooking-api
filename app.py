@@ -356,7 +356,6 @@ def org_to_public(o):
     return {"id": o.id, "company_name": o.company_name, "vat_number": o.vat_number}
 
 def booking_to_dict(b, org=None, user=None):
-    """Returnera booking som dict. 'org' och 'user' kan passas in (prefetch) för att undvika N+1."""
     return {
         "id": b.id,
         "booking_number": getattr(b, "booking_number", None),
@@ -370,13 +369,13 @@ def booking_to_dict(b, org=None, user=None):
         "transit_time_days": b.transit_time_days,
         "co2_emissions": b.co2_emissions,
 
-        # Legacy request (bakåtkompatibelt svar)
+        # Legacy
         "asap_pickup": b.asap_pickup,
         "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
         "asap_delivery": b.asap_delivery,
         "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
 
-        # Nya datum/tidsfält – lastning
+        # Loading
         "loading_requested_date": b.loading_requested_date.isoformat() if b.loading_requested_date else None,
         "loading_requested_time": _fmt_time(b.loading_requested_time),
         "loading_planned_date": b.loading_planned_date.isoformat() if b.loading_planned_date else None,
@@ -384,7 +383,7 @@ def booking_to_dict(b, org=None, user=None):
         "loading_actual_date": b.loading_actual_date.isoformat() if b.loading_actual_date else None,
         "loading_actual_time": _fmt_time(b.loading_actual_time),
 
-        # Nya datum/tidsfält – lossning
+        # Unloading
         "unloading_requested_date": b.unloading_requested_date.isoformat() if b.unloading_requested_date else None,
         "unloading_requested_time": _fmt_time(b.unloading_requested_time),
         "unloading_planned_date": b.unloading_planned_date.isoformat() if b.unloading_planned_date else None,
@@ -399,10 +398,11 @@ def booking_to_dict(b, org=None, user=None):
         "sender_address": address_to_dict(b.sender_address),
         "receiver_address": address_to_dict(b.receiver_address),
 
-        # Nytt för adminvy
-        "organization": org_to_public(org),
-        "booked_by": user_to_public(user),
+        # 👇 bara med i superadmin-svar
+        "organization": org_to_public(org) if org else None,
+        "booked_by": user_to_public(user) if user else None,
     }
+
 
 # =========================================================
 # Protected endpoints

@@ -533,67 +533,93 @@ def is_zone_allowed(country, postal_prefix, available_zones):
     return False
 
 def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country, pickup_postal, delivery_country, delivery_postal, weight, mode_name=None):
+    # Zoner
     if not (is_zone_allowed(pickup_country, pickup_postal, mode_config["available_zones"]) and
             is_zone_allowed(delivery_country, delivery_postal, mode_config["available_zones"])):
         return {"available": False, "status": "Not available for this request"}
 
+    # Viktgränser
     min_allowed = mode_config.get("min_allowed_weight_kg", 0)
     max_allowed = mode_config.get("max_allowed_weight_kg", 999999)
     if weight < min_allowed or weight > max_allowed:
         return {"available": False, "status": "Weight not allowed", "error": f"Allowed weight range: {min_allowed}–{max_allowed} kg"}
 
-    distance_km = round(haversine(pickup_coord, delivery_coord) * 1.2)
+    # Avstånd (aldrig 0 → undvik log(0) senare)
+    distance_km = max(1, int(round(haversine(pickup_coord, delivery_coord) * 1.2)))
+
     balance_key = f"{pickup_country}-{delivery_country}"
-    balance_factor = mode_config.get("balance_factors", {}).get(balance_key, 1.0)
-    ftl_price = round(distance_km * mode_config["km_price_eur"] * balance_factor)
+    balance_factor = float(mode_config.get("balance_factors", {}).get(balance_key, 1.0) or 1.0)
+    km_price = float(mode_config.get("km_price_eur", 0) or 0)
+    ftl_price = max(1, int(round(distance_km * km_price * balance_factor)))
 
-    p1 = mode_config["p1"]; price_p1 = mode_config["price_p1"]
-    p2 = mode_config["p2"]; p2k = mode_config["p2k"]; p2m = mode_config["p2m"]
-    p3 = mode_config["p3"]; p3k = mode_config["p3k"]; p3m = mode_config["p3m"]
-    breakpoint = mode_config["default_breakpoint"]; maxweight = mode_config["max_weight_kg"]
+    # Kurvparametrar
+    try:
+        p1  = float(mode_config["p1"]);   price_p1 = float(mode_config["price_p1"])
+        p2  = float(mode_config["p2"]);   p2k = float(mode_config["p2k"]);  p2m = float(mode_config["p2m"])
+        p3  = float(mode_config["p3"]);   p3k = float(mode_config["p3k"]);  p3m = float(mode_config["p3m"])
+        bp  = float(mode_config["default_breakpoint"])
+        maxw = float(mode_config["max_weight_kg"])
+    except Exception:
+        return {"available": False, "status": "Bad pricing config (missing numbers)"}
 
+    # Monotonicitet + positive krav
+    if not (0 < p1 < p2 < p3 < bp <= maxw):
+        return {"available": False, "status": "Bad pricing config (need 0<p1<p2<p3<breakpoint≤max_weight)"}
+    if price_p1 <= 0 or km_price <= 0:
+        return {"available": False, "status": "Bad pricing config (non-positive price)"}
+
+    # y-värden måste vara > 0
     y1 = price_p1 / p1
     y2 = (p2k * ftl_price + p2m) / p2
     y3 = (p3k * ftl_price + p3m) / p3
-    y4 = ftl_price / breakpoint
+    y4 = ftl_price / bp
 
-    n1 = (log(y2) - log(y1)) / (log(p2) - log(p1)); a1 = y1 / (p1 ** n1)
-    n2 = (log(y3) - log(y2)) / (log(p3) - log(p2)); a2 = y2 / (p2 ** n2)
-    n3 = (log(y4) - log(y3)) / (log(breakpoint) - log(p3)); a3 = y3 / (p3 ** n3)
+    EPS = 1e-9
+    if min(y1, y2, y3, y4) <= 0:
+        return {"available": False, "status": "Bad pricing config (y <= 0 leads to log-domain error)"}
 
+    # Exponenter (skydd mot log-domain/0-division)
+    try:
+        n1 = (log(y2) - log(y1)) / (log(p2) - log(p1)); a1 = y1 / (p1 ** n1)
+        n2 = (log(y3) - log(y2)) / (log(p3) - log(p2)); a2 = y2 / (p2 ** n2)
+        n3 = (log(y4) - log(y3)) / (log(bp) - log(p3)); a3 = y3 / (p3 ** n3)
+    except Exception:
+        return {"available": False, "status": "Bad pricing config (log/ratio failure)"}
+
+    # Prissättning
     if weight < p1:
-        total_price = round(ftl_price * weight / maxweight)
+        total_price = round(ftl_price * weight / maxw)
     elif p1 <= weight < p2:
-        total_price = round(min(a1 * weight ** n1 * weight, ftl_price))
+        total_price = round(min(a1 * (weight ** n1) * weight, ftl_price))
     elif p2 <= weight < p3:
-        total_price = round(min(a2 * weight ** n2 * weight, ftl_price))
-    elif p3 <= weight <= breakpoint:
-        total_price = round(min(a3 * weight ** n3 * weight, ftl_price))
-    elif breakpoint < weight <= maxweight:
-        total_price = ftl_price
+        total_price = round(min(a2 * (weight ** n2) * weight, ftl_price))
+    elif p3 <= weight <= bp:
+        total_price = round(min(a3 * (weight ** n3) * weight, ftl_price))
+    elif bp < weight <= maxw:
+        total_price = int(ftl_price)
     else:
         return {"available": False, "status": "Weight exceeds max weight"}
 
-    # Transit time
-    speed = mode_config.get("transit_speed_kmpd", 500)
-    base_transit = max(1, round(distance_km / speed))
+    # Transit
+    speed = float(mode_config.get("transit_speed_kmpd", 500) or 500)
+    base_transit = max(1, int(round(distance_km / max(speed, 1))))
     transit_time_days = [base_transit, base_transit + 1]
 
-    # Earliest pickup
+    # Tidigaste hämtning
     try:
         now_utc = datetime.utcnow()
         tz_name = pytz.country_timezones[pickup_country.upper()][0]
         now_local = now_utc.replace(tzinfo=pytz.utc).astimezone(pytz.timezone(tz_name))
-    except:
+    except Exception:
         now_local = datetime.utcnow()
 
-    cutoff_hour = mode_config.get("cutoff_hour", 10)
+    cutoff_hour = int(mode_config.get("cutoff_hour", 10) or 10)
     cutoff = now_local.replace(hour=cutoff_hour, minute=0, second=0, microsecond=0)
     days_to_add = 1 if now_local < cutoff else 2
 
     try:
         country_holidays = holidays.country_holidays(pickup_country.upper())
-    except:
+    except Exception:
         country_holidays = []
 
     pickup_date = now_local.date()
@@ -603,18 +629,19 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         if pickup_date.weekday() < 5 and pickup_date not in country_holidays:
             added_days += 1
 
-    pickup_date += timedelta(days=mode_config.get("extra_pickup_days", 0))
+    pickup_date += timedelta(days=int(mode_config.get("extra_pickup_days", 0) or 0))
     earliest_pickup_date = pickup_date.isoformat()
 
-    co2_grams = round((distance_km * weight / 1000) * mode_config.get("co2_per_ton_km", 0) * 1000)
+    co2_grams = max(0, int(round((distance_km * weight / 1000.0) * float(mode_config.get("co2_per_ton_km", 0) or 0) * 1000)))
 
     return {
         "available": True, "status": "success",
-        "total_price_eur": total_price, "ftl_price_eur": ftl_price,
+        "total_price_eur": int(total_price), "ftl_price_eur": int(ftl_price),
         "distance_km": distance_km, "transit_time_days": transit_time_days,
         "earliest_pickup_date": earliest_pickup_date, "currency": "EUR",
         "co2_emissions_grams": co2_grams, "description": mode_config.get("description", "")
     }
+
 
 @app.route("/calculate", methods=["POST"])
 def calculate():

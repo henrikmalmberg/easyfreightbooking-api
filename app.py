@@ -502,6 +502,95 @@ def me():
     finally:
         db.close()
 
+@app.get("/auth/me")
+@jwt_required()
+def me():
+    uid = get_jwt_identity()
+    u = db.session.get(User, uid)
+    return jsonify({
+        "id": u.id, "email": u.email, "name": u.name,
+        "role": u.role, "organization_id": u.organization_id
+    })
+
+@app.get("/organizations")
+@jwt_required()
+@require_role("superadmin")
+def organizations_list():
+    orgs = Organization.query.order_by(Organization.name).all()
+    return jsonify([{"id": o.id, "name": o.name} for o in orgs])
+
+@app.get("/admin/users")
+@jwt_required()
+@require_role("superadmin")
+def users_list():
+    q = (request.args.get("search") or "").strip().lower()
+    page = int(request.args.get("page", 1))
+    page_size = int(request.args.get("page_size", 25))
+
+    query = db.session.query(User, Organization.name.label("organization_name")) \
+        .join(Organization, Organization.id==User.organization_id, isouter=True)
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(
+            func.lower(User.email).like(like),
+            func.lower(User.name).like(like),
+            func.lower(Organization.name).like(like)
+        ))
+
+    total = query.count()
+    rows = query.order_by(User.created_at.desc()) \
+                .offset((page-1)*page_size).limit(page_size).all()
+
+    items = []
+    for u, org_name in rows:
+        items.append({
+            "id": u.id, "email": u.email, "name": u.name, "role": u.role,
+            "organization_id": u.organization_id, "organization_name": org_name,
+            "is_blocked": u.is_blocked, "created_at": u.created_at.isoformat()
+        })
+    return jsonify({"items": items, "total": total})
+
+@app.put("/admin/users/<int:user_id>")
+@jwt_required()
+@require_role("superadmin")
+def users_update(user_id):
+    me_id = get_jwt_identity()
+    me = db.session.get(User, me_id)
+    u = db.session.get(User, user_id)
+    if not u: return jsonify({"error": "Not found"}), 404
+
+    if u.role == "superadmin" and u.id != me.id:
+        return jsonify({"error": "Cannot edit another superadmin"}), 403
+
+    data = (request.get_json() or {})
+    allowed = {"email","name","role","organization_id","is_blocked"}
+    data = {k: v for k, v in data.items() if k in allowed}
+
+    if u.id == me.id and data.get("role") and data["role"] != "superadmin":
+        return jsonify({"error": "Cannot demote yourself"}), 400
+
+    for k, v in data.items(): setattr(u, k, v)
+    db.session.commit()
+
+    org_name = db.session.get(Organization, u.organization_id).name if u.organization_id else None
+    return jsonify({
+        "id": u.id, "email": u.email, "name": u.name, "role": u.role,
+        "organization_id": u.organization_id, "organization_name": org_name,
+        "is_blocked": u.is_blocked
+    })
+
+@app.post("/admin/users/<int:user_id>/send-reset")
+@jwt_required()
+@require_role("superadmin")
+def send_reset(user_id):
+    u = db.session.get(User, user_id)
+    if not u: return jsonify({"error":"Not found"}), 404
+    token = issue_password_reset_token(u)  # din befintliga funktion
+    send_reset_email(u.email, token)       # din mail-funktion
+    return jsonify({"ok": True})
+
+
 @app.route("/invite-user", methods=["POST"])
 @require_auth()
 def invite_user():

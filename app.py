@@ -21,6 +21,14 @@ def generate_uuid() -> str:
 
 
 import os, jwt, re
+
+import uuid
+
+def generate_uuid() -> str:
+    return uuid.uuid4().hex
+
+
+
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -47,11 +55,21 @@ from email.message import EmailMessage
 import xml.etree.ElementTree as ET
 
 app = Flask(__name__)
-CORS(app, origins=[
-    "https://easyfreightbooking.com",
-    "https://easyfreightbooking-dashboard.onrender.com",
-    "https://easyfreightbooking-dashboard.onrender.com/new-booking"
-])
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://easyfreightbooking.com",
+            "https://easyfreightbooking-dashboard.onrender.com",
+              "https://easyfreightbooking-dashboard.onrender.com/new-booking"
+        ],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    }
+})
+
+    
+    
+    )
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))

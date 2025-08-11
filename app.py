@@ -361,47 +361,38 @@ def booking_to_dict(b, org=None, user=None):
         "booking_number": getattr(b, "booking_number", None),
         "booking_date": b.booking_date.isoformat() if getattr(b, "booking_date", None) else None,
         "status": getattr(b, "status", None),
-
         "user_id": b.user_id,
         "selected_mode": b.selected_mode,
         "price_eur": b.price_eur,
         "pickup_date": b.pickup_date.isoformat() if b.pickup_date else None,
         "transit_time_days": b.transit_time_days,
         "co2_emissions": b.co2_emissions,
-
-        # Legacy
         "asap_pickup": b.asap_pickup,
         "requested_pickup_date": b.requested_pickup_date.isoformat() if b.requested_pickup_date else None,
         "asap_delivery": b.asap_delivery,
         "requested_delivery_date": b.requested_delivery_date.isoformat() if b.requested_delivery_date else None,
-
-        # Loading
         "loading_requested_date": b.loading_requested_date.isoformat() if b.loading_requested_date else None,
         "loading_requested_time": _fmt_time(b.loading_requested_time),
         "loading_planned_date": b.loading_planned_date.isoformat() if b.loading_planned_date else None,
         "loading_planned_time": _fmt_time(b.loading_planned_time),
         "loading_actual_date": b.loading_actual_date.isoformat() if b.loading_actual_date else None,
         "loading_actual_time": _fmt_time(b.loading_actual_time),
-
-        # Unloading
         "unloading_requested_date": b.unloading_requested_date.isoformat() if b.unloading_requested_date else None,
         "unloading_requested_time": _fmt_time(b.unloading_requested_time),
         "unloading_planned_date": b.unloading_planned_date.isoformat() if b.unloading_planned_date else None,
         "unloading_planned_time": _fmt_time(b.unloading_planned_time),
         "unloading_actual_date": b.unloading_actual_date.isoformat() if b.unloading_actual_date else None,
         "unloading_actual_time": _fmt_time(b.unloading_actual_time),
-
         "goods": b.goods,
         "references": b.references,
         "addons": b.addons,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "sender_address": address_to_dict(b.sender_address),
         "receiver_address": address_to_dict(b.receiver_address),
-
-        # 👇 bara med i superadmin-svar
-        "organization": org_to_public(org) if org else None,
-        "booked_by": user_to_public(user) if user else None,
+        "organization": org_to_public(org),
+        "booked_by": user_to_public(user),
     }
+
 
 
 # =========================================================
@@ -474,21 +465,18 @@ def get_bookings():
             if user_id:
                 q = q.filter(Booking.user_id == user_id)
             rows = q.all()
-
-            # Prefetch orgs/users to avoid N+1
-            org_ids = {b.org_id for b in rows if b.org_id}
-            user_ids = {b.user_id for b in rows if b.user_id}
-
-            orgs = {o.id: o for o in db.query(Organization).filter(Organization.id.in_(org_ids)).all()} if org_ids else {}
-            users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
-
-            return jsonify([booking_to_dict(b, orgs.get(b.org_id), users.get(b.user_id)) for b in rows])
-
         else:
             rows = q.filter(Booking.org_id == request.user["org_id"]).all()
-            return jsonify([booking_to_dict(b) for b in rows])
+
+        org_ids = {b.org_id for b in rows if b.org_id}
+        user_ids = {b.user_id for b in rows if b.user_id}
+        orgs  = {o.id: o for o in db.query(Organization).filter(Organization.id.in_(org_ids)).all()} if org_ids else {}
+        users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+
+        return jsonify([booking_to_dict(b, orgs.get(b.org_id), users.get(b.user_id)) for b in rows])
     finally:
         db.close()
+
 
 # --- Validering av bokningsnummer (XX-LLL-#####) ---
 BOOKING_REGEX = re.compile(r"^[A-HJ-NP-TV-Z]{2}-[A-HJ-NP-TV-Z]{3}-\d{5}$")
@@ -508,9 +496,13 @@ def get_booking_by_number(booking_number: str):
         b = q.first()
         if not b:
             return jsonify({"error": "Not found"}), 404
-        return jsonify(booking_to_dict(b))
+
+        org = db.query(Organization).get(b.org_id) if b.org_id else None
+        user = db.query(User).get(b.user_id) if b.user_id else None
+        return jsonify(booking_to_dict(b, org, user))
     finally:
         db.close()
+
 
 # =========================================================
 # Calculate

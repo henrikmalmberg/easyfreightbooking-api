@@ -168,7 +168,332 @@ def vies_check(vat: str) -> tuple[bool, str | None]:
         # Nätfel => tillåt (vi gör formatkoll + unikhet oavsett)
         return True, None
 
+# ========= Admin: organizations =========
 
+def _country_ok(cc: str | None) -> bool:
+    if not cc: 
+        return True
+    cc = cc.strip().upper()
+    return bool(re.match(r"^[A-Z]{2}$", cc))
+
+@app.get("/admin/organizations")
+@require_auth("superadmin")
+def admin_orgs_list():
+    db = SessionLocal()
+    try:
+        q = (request.args.get("search") or "").strip().lower()
+        page = int(request.args.get("page", 1))
+        page_size = int(request.args.get("page_size", 25))
+        qry = db.query(Organization)
+
+        if q:
+            like = f"%{q}%"
+            qry = qry.filter(
+                sa_func.lower(Organization.company_name).like(like) |
+                sa_func.lower(Organization.vat_number).like(like) |
+                sa_func.lower(Organization.invoice_email).like(like)
+            )
+
+        total = qry.count()
+        rows = (qry.order_by(Organization.company_name.asc())
+                    .offset((page-1)*page_size)
+                    .limit(page_size)
+                    .all())
+
+        items = []
+        for o in rows:
+            items.append({
+                "id": o.id,
+                "company_name": o.company_name,
+                "vat_number": o.vat_number,
+                "address": o.address,
+                "postal_code": o.postal_code,
+                "country_code": o.country_code,
+                "invoice_email": o.invoice_email,
+                "payment_terms_days": o.payment_terms_days,
+                "currency": o.currency,
+            })
+        return jsonify({"items": items, "total": total})
+    finally:
+        db.close()
+
+
+@app.put("/admin/organizations/<int:org_id>")
+@require_auth("superadmin")
+def admin_orgs_update(org_id: int):
+    db = SessionLocal()
+    try:
+        o = db.query(Organization).filter(Organization.id == org_id).first()
+        if not o:
+            return jsonify({"error": "Not found"}), 404
+
+        data = request.get_json(force=True) or {}
+
+        # Tillåtna fält
+        allowed = {
+            "company_name", "vat_number", "address",
+            "postal_code", "country_code",
+            "invoice_email", "payment_terms_days", "currency"
+        }
+        payload = {k: v for k, v in data.items() if k in allowed}
+
+        # Validering
+        if "country_code" in payload and not _country_ok(payload["country_code"]):
+            return jsonify({"error": "Invalid country code"}), 400
+
+        if "payment_terms_days" in payload:
+            try:
+                v = int(payload["payment_terms_days"])
+                if v < 0 or v > 120:
+                    return jsonify({"error":"payment_terms_days out of range"}), 400
+                payload["payment_terms_days"] = v
+            except Exception:
+                return jsonify({"error":"payment_terms_days must be integer"}), 400
+
+        if "vat_number" in payload:
+            nv = normalize_vat(payload["vat_number"])
+            if not is_vat_format(nv):
+                return jsonify({"error":"Invalid VAT format"}), 400
+            ok, vmsg = vies_check(nv)
+            if not ok:
+                return jsonify({"error": vmsg or "Invalid VAT"}), 400
+            # unikhet
+            exists = (db.query(Organization)
+                        .filter(Organization.vat_number == nv, Organization.id != o.id)
+                        .first())
+            if exists:
+                return jsonify({"error":"VAT already used by another organization"}), 409
+            payload["vat_number"] = nv
+
+        # Sätt fälten
+        for k, v in payload.items():
+            setattr(o, k, v)
+
+        db.commit()
+
+        return jsonify({
+            "id": o.id,
+            "company_name": o.company_name,
+            "vat_number": o.vat_number,
+            "address": o.address,
+            "postal_code": o.postal_code,
+            "country_code": o.country_code,
+            "invoice_email": o.invoice_email,
+            "payment_terms_days": o.payment_terms_days,
+            "currency": o.currency,
+        })
+    except BadRequest as e:
+        db.rollback()
+        return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("PUT /admin/organizations failed")
+        return jsonify({"error":"Server error", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+# ========= Admin: organizations (create + delete) =========
+
+@app.post("/admin/organizations")
+@require_auth("superadmin")
+def admin_orgs_create():
+    db = SessionLocal()
+    try:
+        d = request.get_json(force=True) or {}
+        required = ["company_name", "vat_number", "invoice_email"]
+        miss = [k for k in required if not d.get(k)]
+        if miss:
+            return jsonify({"error": "Missing required fields", "fields": miss}), 400
+
+        # Normalisera + validera VAT
+        nv = normalize_vat(d["vat_number"])
+        if not is_vat_format(nv):
+            return jsonify({"error": "Invalid VAT format"}), 400
+        ok, vmsg = vies_check(nv)
+        if not ok:
+            return jsonify({"error": vmsg or "Invalid VAT"}), 400
+
+        # Unik VAT
+        if db.query(Organization).filter(Organization.vat_number == nv).first():
+            return jsonify({"error": "Organization with this VAT already exists"}), 409
+
+        # Valfritt: country_code
+        cc = (d.get("country_code") or None)
+        if cc:
+            cc = cc.strip().upper()
+            if not re.match(r"^[A-Z]{2}$", cc):
+                return jsonify({"error":"Invalid country code"}), 400
+
+        payment_terms_days = int(d.get("payment_terms_days") or 10)
+        if not (0 <= payment_terms_days <= 120):
+            return jsonify({"error":"payment_terms_days out of range"}), 400
+
+        org = Organization(
+            vat_number=nv,
+            company_name=d["company_name"],
+            address=d.get("address"),
+            invoice_email=d["invoice_email"],
+            payment_terms_days=payment_terms_days,
+            currency=(d.get("currency") or "EUR").upper(),
+            postal_code=(d.get("postal_code") or None),
+            country_code=cc,
+        )
+        db.add(org); db.flush()
+
+        # Valfritt: skapa en första admin-user direkt
+        if d.get("admin"):
+            adm = d["admin"]
+            if not all(adm.get(k) for k in ("name","email","password")):
+                return jsonify({"error":"admin needs name/email/password"}), 400
+            if db.query(User).filter(User.email == adm["email"]).first():
+                return jsonify({"error":"Admin email already in use"}), 409
+            user = User(
+                org_id=org.id,
+                name=adm["name"],
+                email=adm["email"],
+                password_hash=generate_password_hash(adm["password"]),
+                role="admin",
+            )
+            db.add(user)
+
+        db.commit()
+        return jsonify({
+            "id": org.id,
+            "company_name": org.company_name,
+            "vat_number": org.vat_number,
+            "address": org.address,
+            "postal_code": org.postal_code,
+            "country_code": org.country_code,
+            "invoice_email": org.invoice_email,
+            "payment_terms_days": org.payment_terms_days,
+            "currency": org.currency,
+        }), 201
+    except BadRequest as e:
+        db.rollback()
+        return jsonify({"error":"Invalid JSON", "detail": str(e)}), 400
+    except Exception:
+        db.rollback(); app.logger.exception("POST /admin/organizations failed")
+        return jsonify({"error":"Server error"}), 500
+    finally:
+        db.close()
+
+
+@app.delete("/admin/organizations/<int:org_id>")
+@require_auth("superadmin")
+def admin_orgs_delete(org_id: int):
+    """
+    Säkert delete: blockera om det finns users/bookings.
+    Vill du tvinga, skicka ?force=1 (då raderas users och deras addresses,
+    MEN bookings blockeras om schema kräver org_id – i så fall returnerar vi 409).
+    """
+    force = request.args.get("force") in ("1", "true", "yes")
+    db = SessionLocal()
+    try:
+        o = db.query(Organization).filter(Organization.id == org_id).first()
+        if not o: return jsonify({"error":"Not found"}), 404
+
+        users_count = db.query(User).filter(User.org_id == org_id).count()
+        bookings_count = db.query(Booking).filter(Booking.org_id == org_id).count()
+
+        if bookings_count > 0:
+            # Vi blockerar delete så att historiken inte förloras / FK inte bryts
+            return jsonify({"error":"Organization has bookings; cannot delete", 
+                            "bookings": bookings_count}), 409
+
+        if users_count > 0 and not force:
+            return jsonify({"error":"Organization has users; use force=1 to remove users too",
+                            "users": users_count}), 409
+
+        if force and users_count > 0:
+            # Ta bort addresses som skapats av orgens users
+            user_ids = [u.id for u in db.query(User.id).filter(User.org_id == org_id)]
+            if user_ids:
+                db.query(Address).filter(Address.user_id.in_(user_ids)).delete(synchronize_session=False)
+                db.query(User).filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+
+        db.delete(o)
+        db.commit()
+        return jsonify({"ok": True})
+    except Exception:
+        db.rollback(); app.logger.exception("DELETE /admin/organizations failed")
+        return jsonify({"error":"Server error"}), 500
+    finally:
+        db.close()
+
+# ========= Admin: users (create + delete) =========
+
+@app.post("/admin/users")
+@require_auth("superadmin")
+def admin_users_create():
+    db = SessionLocal()
+    try:
+        d = request.get_json(force=True) or {}
+        required = ["org_id", "name", "email", "password"]
+        miss = [k for k in required if not d.get(k)]
+        if miss:
+            return jsonify({"error":"Missing fields","fields":miss}), 400
+
+        if db.query(User).filter(User.email == d["email"]).first():
+            return jsonify({"error":"Email already exists"}), 409
+
+        org = db.query(Organization).filter(Organization.id == int(d["org_id"])).first()
+        if not org:
+            return jsonify({"error":"Organization not found"}), 404
+
+        role = d.get("role") or "user"
+        if role not in ("user","admin","superadmin"):
+            return jsonify({"error":"Invalid role"}), 400
+
+        u = User(
+            org_id = org.id,
+            name   = d["name"],
+            email  = d["email"],
+            password_hash = generate_password_hash(d["password"]),
+            role   = role,
+            is_blocked = bool(d.get("is_blocked", False)),
+        )
+        db.add(u); db.commit()
+        return jsonify({
+            "id": u.id, "name": u.name, "email": u.email, "role": u.role,
+            "organization_id": u.org_id, "is_blocked": u.is_blocked
+        }), 201
+    except BadRequest as e:
+        db.rollback()
+        return jsonify({"error":"Invalid JSON","detail":str(e)}), 400
+    except Exception:
+        db.rollback(); app.logger.exception("POST /admin/users failed")
+        return jsonify({"error":"Server error"}), 500
+    finally:
+        db.close()
+
+
+@app.delete("/admin/users/<int:user_id>")
+@require_auth("superadmin")
+def admin_users_delete(user_id: int):
+    db = SessionLocal()
+    try:
+        me_id = request.user.get("user_id")
+        if user_id == me_id:
+            return jsonify({"error":"Cannot delete yourself"}), 400
+
+        u = db.query(User).filter(User.id == user_id).first()
+        if not u: return jsonify({"error":"Not found"}), 404
+        if u.role == "superadmin":
+            return jsonify({"error":"Cannot delete a superadmin"}), 403
+
+        # Nolla FK i bookings (om kolumnen tillåter NULL – annars byt till reasignering)
+        db.query(Booking).filter(Booking.user_id == user_id).update({Booking.user_id: None})
+        # Ta bort addresses skapade av användaren
+        db.query(Address).filter(Address.user_id == user_id).delete(synchronize_session=False)
+        # Ta bort användaren
+        db.delete(u)
+        db.commit()
+        return jsonify({"ok": True})
+    except Exception:
+        db.rollback(); app.logger.exception("DELETE /admin/users failed")
+        return jsonify({"error":"Server error"}), 500
+    finally:
+        db.close()
 
 
 

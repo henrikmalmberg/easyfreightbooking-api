@@ -37,6 +37,10 @@ class Organization(Base):
     vat_number = Column(String, unique=True, index=True, nullable=False)
     company_name = Column(String, nullable=False)
     address = Column(String, nullable=False)
+    # 👇 NYA FÄLT (måste finnas för /admin/organizations)
+    postal_code  = Column(String, nullable=True)
+    country_code = Column(String(2), nullable=True)
+
     invoice_email = Column(String, nullable=False)
     payment_terms_days = Column(Integer, default=10)
     currency = Column(String, default="EUR")
@@ -44,6 +48,7 @@ class Organization(Base):
 
     users = relationship("User", back_populates="organization", cascade="all, delete")
     bookings = relationship("Booking", back_populates="organization")
+
 
 class User(Base):
     __tablename__ = "users"
@@ -53,12 +58,19 @@ class User(Base):
 
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
-    role = Column(String, CheckConstraint("role IN ('admin','user')"), nullable=False, default="user")
-    password_hash = Column(String, nullable=False)   # <-- MATCHAR DB & app.py
+    # 👇 tillåt superadmin också
+    role = Column(
+        String,
+        CheckConstraint("role IN ('admin','user','superadmin')"),
+        nullable=False,
+        default="user"
+    )
+    password_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     organization = relationship("Organization", back_populates="users")
     bookings = relationship("Booking", back_populates="user")
+
 
 class Address(Base):
     __tablename__ = "addresses"

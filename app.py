@@ -127,9 +127,9 @@ def ping():
 
 
 # Acceptera både PATCH och POST
-@app.route("/admin/bookings/<int:booking_id>/reassign", methods=["PATCH", "POST"])
+@app.route("/admin/bookings/<booking_id>/reassign", methods=["PATCH", "POST", "OPTIONS"])
 @require_auth("superadmin")
-def admin_booking_reassign(booking_id: int):
+def admin_booking_reassign(booking_id):
     db = SessionLocal()
     try:
         b = db.query(Booking).filter(Booking.id == booking_id).first()

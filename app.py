@@ -345,21 +345,21 @@ def admin_orgs_update(org_id: int):
             except Exception:
                 return jsonify({"error":"payment_terms_days must be integer"}), 400
 
-if "vat_number" in payload:
-    cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
-    cc, nat, err = parse_vat_and_cc(payload["vat_number"], cc_hint)
-    if err:
-        return jsonify({"error":"Invalid VAT format", "detail": err}), 400
-    ok, vmsg = vies_check(cc, nat)
-    if not ok:
-        return jsonify({"error": vmsg or "Invalid VAT"}), 400
-    nv = f"{cc}{nat}"
-    exists = (db.query(Organization)
+        if "vat_number" in payload:
+            cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
+            cc, nat, err = parse_vat_and_cc(payload["vat_number"], cc_hint)
+            if err:
+                return jsonify({"error":"Invalid VAT format", "detail": err}), 400
+            ok, vmsg = vies_check(cc, nat)
+            if not ok:
+                return jsonify({"error": vmsg or "Invalid VAT"}), 400
+            nv = f"{cc}{nat}"
+            exists = (db.query(Organization)
                 .filter(Organization.vat_number == nv, Organization.id != o.id)
                 .first())
-    if exists:
-        return jsonify({"error":"VAT already used by another organization"}), 409
-    payload["vat_number"] = nv
+        if exists:
+            return jsonify({"error":"VAT already used by another organization"}), 409
+        payload["vat_number"] = nv
 
 
         # Sätt fälten

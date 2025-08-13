@@ -468,53 +468,7 @@ def admin_orgs_update(org_id: int):
 
 
 # ========= Admin: organizations (create + delete) =========
-@app.post("/admin/bookings/<int:bid>/reassign")
-@require_auth("superadmin")
-def admin_booking_reassign(bid: int):
-    """
-    Body: { "org_id": <int>, "clear_user": true }  # clear_user defaults to True
-    Moves booking to a different organization. Optionally clears user_id.
-    Returns the updated booking payload (same shape as GET /bookings).
-    """
-    db = SessionLocal()
-    try:
-        data = request.get_json(force=True) or {}
-        new_org_id = data.get("org_id")
-        clear_user = bool(data.get("clear_user", True))
 
-        # validate input
-        try:
-            new_org_id = int(new_org_id)
-        except Exception:
-            return jsonify({"error": "org_id must be integer"}), 400
-
-        b = db.query(Booking).filter(Booking.id == bid).first()
-        if not b:
-            return jsonify({"error": "Booking not found"}), 404
-
-        org = db.query(Organization).filter(Organization.id == new_org_id).first()
-        if not org:
-            return jsonify({"error": "Organization not found"}), 404
-
-        # reassign
-        b.org_id = new_org_id
-        if clear_user:
-            b.user_id = None  # drop link to the old user
-
-        db.commit()
-
-        # build response (use same helper you already have)
-        user = db.query(User).get(b.user_id) if b.user_id else None
-        return jsonify(booking_to_dict(b, org, user))
-    except BadRequest as e:
-        db.rollback()
-        return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
-    except Exception as e:
-        db.rollback()
-        app.logger.exception("admin_booking_reassign failed")
-        return jsonify({"error": "Server error", "detail": str(e)}), 500
-    finally:
-        db.close()
 
 @app.post("/admin/organizations")
 @require_auth("superadmin")

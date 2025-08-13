@@ -127,18 +127,31 @@ def ping():
 
 
 # Acceptera både PATCH och POST
-@app.route("/admin/bookings/<booking_id>/reassign", methods=["PATCH", "POST", "OPTIONS"])
+# REMOVE any other /admin/bookings/.../reassign definitions
+
+@app.route("/admin/bookings/<booking_id>/reassign", methods=["POST", "PATCH", "OPTIONS"])
 @require_auth("superadmin")
 def admin_booking_reassign(booking_id):
+    # Let CORS preflight succeed
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     db = SessionLocal()
     try:
-        b = db.query(Booking).filter(Booking.id == booking_id).first()
+        # Find booking by integer id OR by booking_number (e.g. GD-ABC-12345)
+        b = None
+        try:
+            bid = int(booking_id)
+            b = db.query(Booking).filter(Booking.id == bid).first()
+        except ValueError:
+            b = db.query(Booking).filter(Booking.booking_number == booking_id).first()
+
         if not b:
             return jsonify({"error": "Not found"}), 404
 
         payload = request.get_json(force=True) or {}
 
-        # Tillåt både "organization_id" och "org_id"
+        # accept both keys from frontend
         org_id_val = payload.get("organization_id", payload.get("org_id"))
         if org_id_val is None:
             return jsonify({"error": "organization_id is required"}), 400
@@ -148,11 +161,11 @@ def admin_booking_reassign(booking_id):
         except Exception:
             return jsonify({"error": "organization_id must be integer"}), 400
 
-        org = db.query(Organization).filter(Organization.id == new_org_id).first()
+        org = db.query(Organization).get(new_org_id)
         if not org:
             return jsonify({"error": "Organization not found"}), 404
 
-        # --- FIXA WARNING: använd != istället för "is not" för str-jämförelse ---
+        # optional user_id handling
         new_user_id = payload.get("user_id", "__missing__")
         if new_user_id != "__missing__":
             if new_user_id is None:
@@ -162,13 +175,14 @@ def admin_booking_reassign(booking_id):
                     uid = int(new_user_id)
                 except Exception:
                     return jsonify({"error": "user_id must be integer or null"}), 400
-                u = db.query(User).filter(User.id == uid).first()
+                u = db.query(User).get(uid)
                 if not u:
                     return jsonify({"error": "User not found"}), 404
                 if u.org_id != new_org_id:
                     return jsonify({"error": "user_id must belong to the target organization"}), 400
                 b.user_id = u.id
         else:
+            # if org changes and user_id not explicitly provided → clear it
             if b.org_id != new_org_id:
                 b.user_id = None
 
@@ -184,10 +198,11 @@ def admin_booking_reassign(booking_id):
         return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
     except Exception as e:
         db.rollback()
-        app.logger.exception("PATCH/POST /admin/bookings/<id>/reassign failed")
+        app.logger.exception("reassign failed")
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
+
 
 
 @app.route("/login", methods=["POST"])

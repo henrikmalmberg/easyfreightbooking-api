@@ -46,6 +46,32 @@ JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
 # =========================================================
 # Helpers
 # =========================================================
+# --- VAT helpers (replace your old normalize_vat / is_vat_format with this set) ---
+_cc_pat   = re.compile(r"^[A-Z]{2}$")
+_vat_num  = re.compile(r"^[A-Z0-9]{2,12}$")              # national part only (no CC)
+_vat_full = re.compile(r"^([A-Z]{2})([A-Z0-9]{2,12})$")  # CC + national
+
+def normalize_vat(v: str) -> str:
+    """Uppercase och ta bort alla icke-alfa-num-tecken."""
+    return re.sub(r"[^A-Za-z0-9]", "", (v or "")).upper()
+
+def parse_vat_and_cc(raw: str, cc_hint: str | None = None) -> tuple[str, str] | tuple[None, None, str]:
+    """
+    Accepterar 'SE556082087901' eller '556082087901' + cc_hint='SE'.
+    Returnerar (CC, nationalNumber) eller (None, None, error).
+    """
+    v = normalize_vat(raw)
+    m = _vat_full.match(v)
+    if m:
+        return m.group(1), m.group(2)
+    if _vat_num.match(v):
+        cc = (cc_hint or "").strip().upper()
+        if not _cc_pat.fullmatch(cc):
+            return None, None, "Country code required when VAT number has no prefix"
+        return cc, v
+    return None, None, "Invalid VAT format"
+
+
 def generate_uuid() -> str:
     return uuid.uuid4().hex
 
@@ -130,43 +156,86 @@ def is_vat_format(v: str) -> bool:
 
 VIES_ENABLED = os.getenv("VIES_ENABLED", "true").lower() == "true"
 
-def vies_check(vat: str) -> tuple[bool, str | None]:
-    """
-    Kolla VAT mot EU VIES (best effort). Returnerar (valid, err_msg).
-    Faller tillbaka till OK vid nätfel/timeouts.
-    """
-    if not is_vat_format(vat):
-        return False, "Invalid VAT format"
-
-    if not VIES_ENABLED:
-        return True, None
-
-    country = vat[:2]
-    number = vat[2:]
-    # Officiell SOAP endpoint:
-    url = "https://ec.europa.eu/taxation_customs/vies/services/checkVatService"
-    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+def _vies_request_envelope(cc: str, number: str) -> bytes:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
     <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
                    xmlns:tns="urn:ec.europa.eu:taxud:vies:services:checkVat:types">
       <soap:Body>
         <tns:checkVat>
-          <tns:countryCode>{country}</tns:countryCode>
+          <tns:countryCode>{cc}</tns:countryCode>
           <tns:vatNumber>{number}</tns:vatNumber>
         </tns:checkVat>
       </soap:Body>
-    </soap:Envelope>"""
+    </soap:Envelope>""".encode("utf-8")
+
+def _vies_parse(xml_text: str) -> dict:
+    """
+    Plockar ut valid/name/address/requestDate/countryCode/vatNumber ur SOAP-svaret.
+    """
+    # snabb str-sökning för valid; robust parse för övrigt
+    out = {"valid": False, "name": None, "address": None, "requestDate": None,
+           "countryCode": None, "vatNumber": None}
     try:
-        r = requests.post(url, data=envelope.encode("utf-8"),
+        root = XET.fromstring(xml_text)
+        ns = {"s": "http://schemas.xmlsoap.org/soap/envelope/",
+              "t": "urn:ec.europa.eu:taxud:vies:services:checkVat:types"}
+        body = root.find("s:Body", ns)
+        resp = body.find(".//t:checkVatResponse", ns)
+        def txt(tag):
+            el = resp.find(f"t:{tag}", ns)
+            return (el.text or "").strip() if el is not None and el.text else None
+        out["valid"]       = (txt("valid") == "true")
+        out["name"]        = txt("name")
+        out["address"]     = txt("address")
+        out["requestDate"] = txt("requestDate")
+        out["countryCode"] = txt("countryCode")
+        out["vatNumber"]   = txt("vatNumber")
+    except Exception:
+        pass
+    return out
+
+def vies_check(cc: str, number: str) -> tuple[bool, str | None]:
+    """
+    True/False-validering mot VIES. Vid nätfel: (True, None) (best effort).
+    """
+    if not _cc_pat.fullmatch(cc) or not _vat_num.fullmatch(number):
+        return False, "Invalid VAT format"
+    if not VIES_ENABLED:
+        return True, None
+
+    url = "https://ec.europa.eu/taxation_customs/vies/services/checkVatService"
+    try:
+        r = requests.post(url, data=_vies_request_envelope(cc, number),
                           headers={"Content-Type": "text/xml; charset=utf-8"},
                           timeout=8)
         r.raise_for_status()
-        # Enkel parse: leta <valid>true</valid>
-        valid = "<valid>true</valid>" in r.text
-        return (True, None) if valid else (False, "VAT not found in VIES")
+        parsed = _vies_parse(r.text)
+        return (True, None) if parsed.get("valid") else (False, "VAT not found in VIES")
     except Exception as e:
         app.logger.warning("VIES check skipped (%s)", e)
-        # Nätfel => tillåt (vi gör formatkoll + unikhet oavsett)
         return True, None
+
+def vies_lookup(cc: str, number: str) -> tuple[dict | None, str | None]:
+    """
+    Returnerar metadata från VIES: {valid, name, address, requestDate, countryCode, vatNumber}
+    Vid nätfel: (None, "network")  – hantera i UI.
+    """
+    if not _cc_pat.fullmatch(cc) or not _vat_num.fullmatch(number):
+        return None, "Invalid VAT format"
+    if not VIES_ENABLED:
+        return {"valid": True, "name": None, "address": None,
+                "requestDate": None, "countryCode": cc, "vatNumber": number}, None
+
+    url = "https://ec.europa.eu/taxation_customs/vies/services/checkVatService"
+    try:
+        r = requests.post(url, data=_vies_request_envelope(cc, number),
+                          headers={"Content-Type": "text/xml; charset=utf-8"},
+                          timeout=8)
+        r.raise_for_status()
+        return _vies_parse(r.text), None
+    except Exception as e:
+        app.logger.warning("VIES lookup failed (%s)", e)
+        return None, "network"
 
 # ========= Admin: organizations =========
 
@@ -175,6 +244,32 @@ def _country_ok(cc: str | None) -> bool:
         return True
     cc = cc.strip().upper()
     return bool(re.match(r"^[A-Z]{2}$", cc))
+
+@app.get("/vies/lookup")
+def vies_lookup_endpoint():
+    """
+    Exempel:
+      /vies/lookup?vat=556082087901&cc=SE
+      /vies/lookup?vat=SE556082087901          (cc valfritt)
+    Returnerar: { valid, name, address, countryCode, vatNumber, requestDate }
+    """
+    raw = (request.args.get("vat") or "").strip()
+    cc_hint = (request.args.get("cc") or "").strip().upper() or None
+    if not raw:
+        return jsonify({"error":"Missing vat"}), 400
+
+    cc, nat, err = parse_vat_and_cc(raw, cc_hint)
+    if err:
+        return jsonify({"error": err}), 400
+
+    meta, err2 = vies_lookup(cc, nat)
+    if err2 == "network":
+        return jsonify({"error":"VIES network error, please try again"}), 502
+    if not meta:
+        return jsonify({"error":"Unknown error"}), 500
+
+    return jsonify(meta)
+
 
 @app.get("/admin/organizations")
 @require_auth("superadmin")
@@ -250,20 +345,22 @@ def admin_orgs_update(org_id: int):
             except Exception:
                 return jsonify({"error":"payment_terms_days must be integer"}), 400
 
-        if "vat_number" in payload:
-            nv = normalize_vat(payload["vat_number"])
-            if not is_vat_format(nv):
-                return jsonify({"error":"Invalid VAT format"}), 400
-            ok, vmsg = vies_check(nv)
-            if not ok:
-                return jsonify({"error": vmsg or "Invalid VAT"}), 400
-            # unikhet
-            exists = (db.query(Organization)
-                        .filter(Organization.vat_number == nv, Organization.id != o.id)
-                        .first())
-            if exists:
-                return jsonify({"error":"VAT already used by another organization"}), 409
-            payload["vat_number"] = nv
+if "vat_number" in payload:
+    cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
+    cc, nat, err = parse_vat_and_cc(payload["vat_number"], cc_hint)
+    if err:
+        return jsonify({"error":"Invalid VAT format", "detail": err}), 400
+    ok, vmsg = vies_check(cc, nat)
+    if not ok:
+        return jsonify({"error": vmsg or "Invalid VAT"}), 400
+    nv = f"{cc}{nat}"
+    exists = (db.query(Organization)
+                .filter(Organization.vat_number == nv, Organization.id != o.id)
+                .first())
+    if exists:
+        return jsonify({"error":"VAT already used by another organization"}), 409
+    payload["vat_number"] = nv
+
 
         # Sätt fälten
         for k, v in payload.items():
@@ -305,13 +402,18 @@ def admin_orgs_create():
         if miss:
             return jsonify({"error": "Missing required fields", "fields": miss}), 400
 
-        # Normalisera + validera VAT
-        nv = normalize_vat(d["vat_number"])
-        if not is_vat_format(nv):
-            return jsonify({"error": "Invalid VAT format"}), 400
-        ok, vmsg = vies_check(nv)
-        if not ok:
-            return jsonify({"error": vmsg or "Invalid VAT"}), 400
+# Normalisera + validera VAT
+cc_hint = (d.get("country_code") or "").strip().upper() or None
+cc, nat, err = parse_vat_and_cc(d["vat_number"], cc_hint)
+if err:
+    return jsonify({"error": err, "field": "vat_number"}), 400
+
+ok, vmsg = vies_check(cc, nat)
+if not ok:
+    return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+
+nv = f"{cc}{nat}"  # canonical storage
+
 
         # Unik VAT
         if db.query(Organization).filter(Organization.vat_number == nv).first():
@@ -520,14 +622,19 @@ def register_organization():
         if country_code and country_code not in ALLOWED_CC:
             return jsonify({"error":"Invalid country code","field":"country_code"}), 400
         
-        # 1) Normalisera & validera VAT
-        nvat = normalize_vat(data["vat_number"])
-        if not is_vat_format(nvat):
-            return jsonify({"error": "Invalid VAT format", "field": "vat_number"}), 400
+nvat_raw = data["vat_number"]
+cc_hint  = (data.get("country_code") or "").strip().upper() or None
+cc, nat, err = parse_vat_and_cc(nvat_raw, cc_hint)
+if err:
+    return jsonify({"error": "Invalid VAT format", "detail": err, "field": "vat_number"}), 400
 
-        valid, vmsg = vies_check(nvat)
-        if not valid:
-            return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+valid, vmsg = vies_check(cc, nat)
+if not valid:
+    return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+
+nvat = f"{cc}{nat}"
+# ... och använd nvat i DB + unikhetskontrollen
+
 
 
         # 1) finns org på VAT? -> 409 + admin-kontakt

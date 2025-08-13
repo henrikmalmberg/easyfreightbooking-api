@@ -334,7 +334,7 @@ def admin_orgs_update(org_id: int):
             cc_val = (payload.get("country_code") or "").strip().upper()
             if cc_val and not _country_ok(cc_val):
                 return jsonify({"error": "Invalid country code"}), 400
-            payload["country_code"] = cc_val or None  # normalisera till None om tomt
+            payload["country_code"] = cc_val or None
 
         # payment_terms_days
         if "payment_terms_days" in payload:
@@ -342,15 +342,14 @@ def admin_orgs_update(org_id: int):
                 v = int(payload["payment_terms_days"])
             except Exception:
                 return jsonify({"error": "payment_terms_days must be integer"}), 400
-            if v < 0 or v > 120:
+            if not (0 <= v <= 120):
                 return jsonify({"error": "payment_terms_days out of range"}), 400
             payload["payment_terms_days"] = v
 
-        # VAT – bara om fältet finns med OCH inte tomt (tomt => ändra inte)
+        # VAT – bara om användaren faktiskt skickade något i fältet
         if "vat_number" in payload:
             raw_vat = (payload.get("vat_number") or "").strip()
-            if raw_vat:  # användaren har matat in något
-                # hint: payload.country_code (om skickad) annars befintlig org-CC
+            if raw_vat:
                 cc_hint = payload.get("country_code") or (o.country_code or None)
                 cc, nat, err = parse_vat_and_cc(raw_vat, cc_hint)
                 if err:
@@ -361,20 +360,18 @@ def admin_orgs_update(org_id: int):
                     return jsonify({"error": vmsg or "Invalid VAT"}), 400
 
                 nv = f"{cc}{nat}"
-
-                # Unikhetskoll (exkludera oss själva)
                 exists = (db.query(Organization)
-                            .filter(Organization.vat_number == nv, Organization.id != o.id)
-                            .first())
+                          .filter(Organization.vat_number == nv, Organization.id != o.id)
+                          .first())
                 if exists:
                     return jsonify({"error": "VAT already used by another organization"}), 409
 
-                payload["vat_number"] = nv  # spara normaliserat
+                payload["vat_number"] = nv
             else:
-                # Tomt fält -> ta bort så vi inte nollar VAT av misstag
+                # Tomt fält => ändra inte VAT
                 payload.pop("vat_number", None)
 
-        # Sätt fält på modellen
+        # Sätt fält
         for k, v in payload.items():
             setattr(o, k, v)
 

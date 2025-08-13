@@ -402,17 +402,17 @@ def admin_orgs_create():
         if miss:
             return jsonify({"error": "Missing required fields", "fields": miss}), 400
 
-# Normalisera + validera VAT
-cc_hint = (d.get("country_code") or "").strip().upper() or None
-cc, nat, err = parse_vat_and_cc(d["vat_number"], cc_hint)
-if err:
-    return jsonify({"error": err, "field": "vat_number"}), 400
+        # Normalisera + validera VAT
+        cc_hint = (d.get("country_code") or "").strip().upper() or None
+        cc, nat, err = parse_vat_and_cc(d["vat_number"], cc_hint)
+        if err:
+            return jsonify({"error": err, "field": "vat_number"}), 400
 
-ok, vmsg = vies_check(cc, nat)
-if not ok:
-    return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+        ok, vmsg = vies_check(cc, nat)
+        if not ok:
+            return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
 
-nv = f"{cc}{nat}"  # canonical storage
+        nv = f"{cc}{nat}"  # canonical storage
 
 
         # Unik VAT

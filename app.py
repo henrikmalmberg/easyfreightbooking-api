@@ -622,18 +622,18 @@ def register_organization():
         if country_code and country_code not in ALLOWED_CC:
             return jsonify({"error":"Invalid country code","field":"country_code"}), 400
         
-nvat_raw = data["vat_number"]
-cc_hint  = (data.get("country_code") or "").strip().upper() or None
-cc, nat, err = parse_vat_and_cc(nvat_raw, cc_hint)
-if err:
-    return jsonify({"error": "Invalid VAT format", "detail": err, "field": "vat_number"}), 400
+        nvat_raw = data["vat_number"]
+        cc_hint  = (data.get("country_code") or "").strip().upper() or None
+        cc, nat, err = parse_vat_and_cc(nvat_raw, cc_hint)
+        if err:
+            return jsonify({"error": "Invalid VAT format", "detail": err, "field": "vat_number"}), 400
 
-valid, vmsg = vies_check(cc, nat)
-if not valid:
-    return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
+        valid, vmsg = vies_check(cc, nat)
+        if not valid:
+            return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
 
-nvat = f"{cc}{nat}"
-# ... och använd nvat i DB + unikhetskontrollen
+        nvat = f"{cc}{nat}"
+        # ... och använd nvat i DB + unikhetskontrollen
 
 
 

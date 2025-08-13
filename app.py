@@ -146,10 +146,6 @@ def login():
     finally:
         db.close()
 
-def normalize_vat(v: str) -> str:
-    """ Uppercase + ta bort mellanslag/tecken. """
-    return re.sub(r"[^A-Za-z0-9]", "", (v or "")).upper()
-
 def is_vat_format(v: str) -> bool:
     """ Grov formatkoll: CC + 2–12 tecken. Detaljkontroller görs ev. mot VIES. """
     return bool(re.match(r"^[A-Z]{2}[A-Z0-9]{2,12}$", v or ""))
@@ -186,7 +182,7 @@ def _vies_parse(xml_text: str) -> dict:
             return (el.text or "").strip() if el is not None and el.text else None
         out["valid"]       = (txt("valid") == "true")
         out["name"]        = txt("name")
-        out["address"]     = txt("address")
+        out["address"] = " ".join((txt("address") or "").split())
         out["requestDate"] = txt("requestDate")
         out["countryCode"] = txt("countryCode")
         out["vatNumber"]   = txt("vatNumber")
@@ -344,7 +340,7 @@ def admin_orgs_update(org_id: int):
                 payload["payment_terms_days"] = v
             except Exception:
                 return jsonify({"error":"payment_terms_days must be integer"}), 400
-
+        exists=None;
         if "vat_number" in payload:
             cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
             cc, nat, err = parse_vat_and_cc(payload["vat_number"], cc_hint)
@@ -1323,9 +1319,6 @@ def calculate_for_mode(mode_config, pickup_coord, delivery_coord, pickup_country
         "co2_emissions_grams": co2_grams, "description": mode_config.get("description", "")
     }
 
-
-import uuid
-import logging
 
 # Koppla Flask-loggningen till Gunicorns logger (så allt syns i Render)
 gunicorn_logger = logging.getLogger("gunicorn.error")

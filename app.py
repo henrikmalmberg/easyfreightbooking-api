@@ -321,7 +321,7 @@ def admin_orgs_update(org_id: int):
 
         data = request.get_json(force=True) or {}
 
-        # Tillåtna fält från formuläret
+        # Tillåtna fält från UI
         allowed = {
             "company_name", "vat_number", "address",
             "postal_code", "country_code",
@@ -329,54 +329,49 @@ def admin_orgs_update(org_id: int):
         }
         payload = {k: v for k, v in data.items() if k in allowed}
 
-        # country_code
-        if "country_code" in payload:
-            cc_val = (payload.get("country_code") or "").strip().upper()
-            if cc_val and not _country_ok(cc_val):
-                return jsonify({"error": "Invalid country code"}), 400
-            payload["country_code"] = cc_val or None
+        # Validera country_code om satt
+        if "country_code" in payload and not _country_ok(payload["country_code"]):
+            return jsonify({"error": "Invalid country code"}), 400
 
-        # payment_terms_days
+        # Validera payment_terms_days om satt
         if "payment_terms_days" in payload:
             try:
                 v = int(payload["payment_terms_days"])
+                if v < 0 or v > 120:
+                    return jsonify({"error": "payment_terms_days out of range"}), 400
+                payload["payment_terms_days"] = v
             except Exception:
                 return jsonify({"error": "payment_terms_days must be integer"}), 400
-            if not (0 <= v <= 120):
-                return jsonify({"error": "payment_terms_days out of range"}), 400
-            payload["payment_terms_days"] = v
 
-        # VAT – bara om användaren faktiskt skickade något i fältet
+        # Normalisera + validera VAT om användaren uppdaterar det
         if "vat_number" in payload:
             raw_vat = (payload.get("vat_number") or "").strip()
-            if raw_vat:
-                cc_hint = payload.get("country_code") or (o.country_code or None)
-                cc, nat, err = parse_vat_and_cc(raw_vat, cc_hint)
-                if err:
-                    return jsonify({"error": "Invalid VAT format", "detail": err}), 400
+            cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
 
-                ok, vmsg = vies_check(cc, nat)
-                if not ok:
-                    return jsonify({"error": vmsg or "Invalid VAT"}), 400
+            parsed = parse_vat_and_cc(raw_vat, cc_hint)
+            cc, nat = parsed[0], parsed[1]
+            err = parsed[2] if len(parsed) > 2 else None
+            if err:
+                return jsonify({"error": "Invalid VAT format", "detail": err}), 400
 
-                nv = f"{cc}{nat}"
-                exists = (db.query(Organization)
-                          .filter(Organization.vat_number == nv, Organization.id != o.id)
-                          .first())
-                if exists:
-                    return jsonify({"error": "VAT already used by another organization"}), 409
+            ok, vmsg = vies_check(cc, nat)
+            if not ok:
+                return jsonify({"error": vmsg or "Invalid VAT"}), 400
 
-                payload["vat_number"] = nv
-            else:
-                # Tomt fält => ändra inte VAT
-                payload.pop("vat_number", None)
+            nv = f"{cc}{nat}"
+            exists = (db.query(Organization)
+                        .filter(Organization.vat_number == nv, Organization.id != o.id)
+                        .first())
+            if exists:
+                return jsonify({"error": "VAT already used by another organization"}), 409
 
-        # Sätt fält
+            payload["vat_number"] = nv  # spara normaliserad (CC + national)
+
+        # Sätt alla fält på modellen
         for k, v in payload.items():
             setattr(o, k, v)
 
         db.commit()
-
         return jsonify({
             "id": o.id,
             "company_name": o.company_name,
@@ -393,7 +388,7 @@ def admin_orgs_update(org_id: int):
         return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
     except Exception as e:
         db.rollback()
-        app.logger.exception("PUT /admin/organizations failed: %s", e)
+        app.logger.exception("PUT /admin/organizations failed")
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()

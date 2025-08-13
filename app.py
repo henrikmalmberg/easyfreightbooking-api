@@ -1,4 +1,4 @@
-from flask_cors import CORS
+    from flask_cors import CORS
 from flask import Flask, request, jsonify
 from math import radians, cos, sin, sqrt, atan2, log
 from datetime import datetime, timedelta, time
@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 import requests
 from xml.etree import ElementTree as XET
 from sqlalchemy import or_
+import logging
 
 
 
@@ -340,7 +341,8 @@ def admin_orgs_update(org_id: int):
                 payload["payment_terms_days"] = v
             except Exception:
                 return jsonify({"error":"payment_terms_days must be integer"}), 400
-        exists=None;
+        exists=None
+        nv=None;
         if "vat_number" in payload:
             cc_hint = (payload.get("country_code") or o.country_code or "").strip().upper() or None
             cc, nat, err = parse_vat_and_cc(payload["vat_number"], cc_hint)
@@ -353,9 +355,9 @@ def admin_orgs_update(org_id: int):
             exists = (db.query(Organization)
                 .filter(Organization.vat_number == nv, Organization.id != o.id)
                 .first())
-        if exists:
-            return jsonify({"error":"VAT already used by another organization"}), 409
-        payload["vat_number"] = nv
+            if exists:
+                return jsonify({"error":"VAT already used by another organization"}), 409
+            payload["vat_number"] = nv
 
 
         # Sätt fälten
@@ -393,6 +395,7 @@ def admin_orgs_create():
     db = SessionLocal()
     try:
         d = request.get_json(force=True) or {}
+
         required = ["company_name", "vat_number", "invoice_email"]
         miss = [k for k in required if not d.get(k)]
         if miss:
@@ -408,24 +411,31 @@ def admin_orgs_create():
         if not ok:
             return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
 
-        nv = f"{cc}{nat}"  # canonical storage
-
+        nv = f"{cc}{nat}"
 
         # Unik VAT
-        if db.query(Organization).filter(Organization.vat_number == nv).first():
-            return jsonify({"error": "Organization with this VAT already exists"}), 409
+        exists = db.query(Organization).filter(Organization.vat_number == nv).first()
+        if exists:
+            return jsonify({"error": "VAT already used by another organization"}), 409
+
+        d["vat_number"] = nv
 
         # Valfritt: country_code
         cc = (d.get("country_code") or None)
         if cc:
             cc = cc.strip().upper()
             if not re.match(r"^[A-Z]{2}$", cc):
-                return jsonify({"error":"Invalid country code"}), 400
+                return jsonify({"error": "Invalid country code"}), 400
 
-        payment_terms_days = int(d.get("payment_terms_days") or 10)
+        # Validera betalvillkor
+        try:
+            payment_terms_days = int(d.get("payment_terms_days") or 10)
+        except ValueError:
+            return jsonify({"error": "payment_terms_days must be integer"}), 400
         if not (0 <= payment_terms_days <= 120):
-            return jsonify({"error":"payment_terms_days out of range"}), 400
+            return jsonify({"error": "payment_terms_days out of range"}), 400
 
+        # Skapa organisation
         org = Organization(
             vat_number=nv,
             company_name=d["company_name"],
@@ -436,15 +446,16 @@ def admin_orgs_create():
             postal_code=(d.get("postal_code") or None),
             country_code=cc,
         )
-        db.add(org); db.flush()
+        db.add(org)
+        db.flush()
 
         # Valfritt: skapa en första admin-user direkt
         if d.get("admin"):
             adm = d["admin"]
-            if not all(adm.get(k) for k in ("name","email","password")):
-                return jsonify({"error":"admin needs name/email/password"}), 400
+            if not all(adm.get(k) for k in ("name", "email", "password")):
+                return jsonify({"error": "admin needs name/email/password"}), 400
             if db.query(User).filter(User.email == adm["email"]).first():
-                return jsonify({"error":"Admin email already in use"}), 409
+                return jsonify({"error": "Admin email already in use"}), 409
             user = User(
                 org_id=org.id,
                 name=adm["name"],
@@ -466,12 +477,14 @@ def admin_orgs_create():
             "payment_terms_days": org.payment_terms_days,
             "currency": org.currency,
         }), 201
+
     except BadRequest as e:
         db.rollback()
-        return jsonify({"error":"Invalid JSON", "detail": str(e)}), 400
+        return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
     except Exception:
-        db.rollback(); app.logger.exception("POST /admin/organizations failed")
-        return jsonify({"error":"Server error"}), 500
+        db.rollback()
+        app.logger.exception("POST /admin/organizations failed")
+        return jsonify({"error": "Server error"}), 500
     finally:
         db.close()
 
@@ -616,11 +629,11 @@ def register_organization():
         postal_code = (data.get("postal_code") or "").strip()
         country_code = (data.get("country_code") or "").strip().upper() or None
         if country_code and country_code not in ALLOWED_CC:
-            return jsonify({"error":"Invalid country code","field":"country_code"}), 400
-        
-        nvat_raw = data["vat_number"]
-        cc_hint  = (data.get("country_code") or "").strip().upper() or None
-        cc, nat, err = parse_vat_and_cc(nvat_raw, cc_hint)
+            return jsonify({"error": "Invalid country code", "field": "country_code"}), 400
+
+        # VAT: normalisera, VIES-validera, och säkerställ unikhet
+        cc_hint = country_code
+        cc, nat, err = parse_vat_and_cc(data["vat_number"], cc_hint)
         if err:
             return jsonify({"error": "Invalid VAT format", "detail": err, "field": "vat_number"}), 400
 
@@ -628,18 +641,15 @@ def register_organization():
         if not valid:
             return jsonify({"error": vmsg or "Invalid VAT", "field": "vat_number"}), 400
 
-        nvat = f"{cc}{nat}"
-        # ... och använd nvat i DB + unikhetskontrollen
+        nv = f"{cc}{nat}"
 
-
-
-        # 1) finns org på VAT? -> 409 + admin-kontakt
-        org = db.query(Organization).filter(Organization.vat_number == nvat).first()
+        # 1) finns org på VAT? -> 409 + ev. admin-kontakt
+        org = db.query(Organization).filter(Organization.vat_number == nv).first()
         if org:
             admin = (db.query(User)
-                       .filter(User.org_id == org.id, User.role.in_(["admin","superadmin"]))
-                       .order_by(User.id.asc())
-                       .first())
+                        .filter(User.org_id == org.id, User.role.in_(["admin", "superadmin"]))
+                        .order_by(User.id.asc())
+                        .first())
             return jsonify({
                 "error": "Organization already exists",
                 "admin": {"name": admin.name, "email": admin.email} if admin else None
@@ -647,11 +657,11 @@ def register_organization():
 
         # 2) finns e-post redan?
         if db.query(User).filter(User.email == data["email"]).first():
-            return jsonify({"error":"Email already in use","field":"email"}), 409
+            return jsonify({"error": "Email already in use", "field": "email"}), 409
 
         # 3) skapa
         org = Organization(
-            vat_number=nvat,
+            vat_number=nv,
             company_name=data["company_name"],
             address=data["address"],
             invoice_email=data["invoice_email"],
@@ -660,19 +670,29 @@ def register_organization():
             postal_code=postal_code or None,
             country_code=country_code,
         )
-        db.add(org); db.flush()
+
+        db.add(org)
+        db.flush()
 
         user = User(
-            org_id=org.id, name=data["name"], email=data["email"],
-            password_hash=generate_password_hash(data["password"]), role="admin"
+            org_id=org.id,
+            name=data["name"],
+            email=data["email"],
+            password_hash=generate_password_hash(data["password"]),
+            role="admin"
         )
-        db.add(user); db.commit()
-        return jsonify({"message":"Organization and admin created","org_id":org.id}), 201
+        db.add(user)
+        db.commit()
+
+        return jsonify({"message": "Organization and admin created", "org_id": org.id}), 201
+
     except Exception:
-        db.rollback(); app.logger.exception("register-organization failed")
-        return jsonify({"error":"Server error"}), 500
+        db.rollback()
+        app.logger.exception("register-organization failed")
+        return jsonify({"error": "Server error"}), 500
     finally:
         db.close()
+
 
 
 # =========================================================
@@ -742,6 +762,21 @@ def get_active_config(use: str = "published") -> Dict[str, Any]:
         return pub.data if pub else {}
     finally:
         db.close()
+def _compute_allowed_cc() -> set[str]:
+    """
+    Samlar alla landskoder som finns i available_zones
+    över samtliga modes i den aktiva konfigurationen.
+    """
+    cfg = get_active_config(use="published") or {}
+    acc: set[str] = set()
+    for mode in cfg.values():
+        az = (mode or {}).get("available_zones") or {}
+        acc |= set(az.keys())
+    return acc
+
+# Bygg ALLOWED_CC vid uppstart så register_organization kan validera country_code
+ALLOWED_CC = _compute_allowed_cc()
+app.logger.info("ALLOWED_CC initialiserat: %s", sorted(ALLOWED_CC))
 
 # =========================================================
 # Validation of config

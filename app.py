@@ -124,6 +124,78 @@ def require_auth(role=None):
 def ping():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
+@app.patch("/admin/bookings/<int:booking_id>/reassign")
+@require_auth("superadmin")
+def admin_booking_reassign(booking_id: int):
+    """
+    Reassign a booking to a different organization (and optionally a user).
+    Body:
+      {
+        "organization_id": <int>,          # required
+        "user_id": <int | null>            # optional; must belong to organization_id if set
+      }
+    """
+    db = SessionLocal()
+    try:
+        b = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+
+        payload = request.get_json(force=True) or {}
+        if "organization_id" not in payload:
+            return jsonify({"error": "organization_id is required"}), 400
+
+        # 1) Validera org
+        try:
+            new_org_id = int(payload["organization_id"])
+        except Exception:
+            return jsonify({"error": "organization_id must be integer"}), 400
+
+        org = db.query(Organization).filter(Organization.id == new_org_id).first()
+        if not org:
+            return jsonify({"error": "Organization not found"}), 404
+
+        # 2) Validera (ev.) user
+        new_user_id = payload.get("user_id", "__missing__")
+        if new_user_id is not "__missing__":
+            # user_id får vara null/None => nolla booked_by
+            if new_user_id is None:
+                b.user_id = None
+            else:
+                try:
+                    uid = int(new_user_id)
+                except Exception:
+                    return jsonify({"error": "user_id must be integer or null"}), 400
+                u = db.query(User).filter(User.id == uid).first()
+                if not u:
+                    return jsonify({"error": "User not found"}), 404
+                if u.org_id != new_org_id:
+                    return jsonify({"error": "user_id must belong to the target organization"}), 400
+                b.user_id = u.id
+        else:
+            # Om org byts men user inte skickas: nolla user_id för att undvika mismatch
+            if b.org_id != new_org_id:
+                b.user_id = None
+
+        # 3) Sätt ny org
+        b.org_id = new_org_id
+
+        db.commit()
+
+        org_row = db.query(Organization).get(b.org_id) if b.org_id else None
+        user_row = db.query(User).get(b.user_id) if b.user_id else None
+        return jsonify(booking_to_dict(b, org_row, user_row))
+    except BadRequest as e:
+        db.rollback()
+        return jsonify({"error": "Invalid JSON", "detail": str(e)}), 400
+    except Exception as e:
+        db.rollback()
+        app.logger.exception("PATCH /admin/bookings/<id>/reassign failed")
+        return jsonify({"error": "Server error", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)

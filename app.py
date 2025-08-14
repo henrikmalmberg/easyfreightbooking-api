@@ -23,6 +23,7 @@ import requests
 from xml.etree import ElementTree as XET
 from sqlalchemy import or_
 import logging
+from models import OrgAddress
 
 
 
@@ -56,6 +57,18 @@ _vat_full = re.compile(r"^([A-Z]{2})([A-Z0-9]{2,12})$")  # CC + national
 def normalize_vat(v: str) -> str:
     """Uppercase och ta bort alla icke-alfa-num-tecken."""
     return re.sub(r"[^A-Za-z0-9]", "", (v or "")).upper()
+
+def addr_key(src: dict) -> str:
+    def norm(x): return (x or "").strip().lower()
+    parts = [
+        norm(src.get("business_name")), norm(src.get("address")), norm(src.get("postal")),
+        norm(src.get("city")), norm(src.get("country")),
+    ]
+    return "|".join(parts)
+
+def _require_org_and_role():
+    # alla inloggade får läsa/skriva sin egen org
+    return request.user["org_id"], request.user.get("role")
 
 def parse_vat_and_cc(raw: str, cc_hint: str | None = None) -> tuple[str, str] | tuple[None, None, str]:
     """
@@ -118,6 +131,34 @@ def require_auth(role=None):
         return wrapper
     return decorator
 
+def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
+    key = addr_key({
+        "business_name": src.get("business_name"),
+        "address": src.get("address"),
+        "postal": src.get("postal"),
+        "city": src.get("city"),
+        "country": src.get("country"),
+    })
+    exists = (db.query(OrgAddress)
+                .filter(OrgAddress.org_id == org_id, OrgAddress.dedupe_key == key)
+                .first())
+    if exists: return
+    row = OrgAddress(
+        id=generate_uuid(), org_id=org_id, type=addr_type, dedupe_key=key,
+        business_name=src.get("business_name"), address=src.get("address"),
+        postal_code=src.get("postal"), city=src.get("city"), country_code=src.get("country"),
+        contact_name=src.get("contact_name"), phone=src.get("phone"), email=src.get("email"),
+        opening_hours=src.get("opening_hours"), instructions=src.get("instructions"),
+    )
+    db.add(row)
+
+# I /book, strax efter att du har `org_id` och innan/efter address-commit:
+upsert_org_address(db, org_id, data.get("pickup", {}) or {}, "sender")
+upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
+# (ingen extra commit behövs om du ändå committar direkt efter)
+
+
+
 # =========================================================
 # Public endpoints
 # =========================================================
@@ -125,7 +166,98 @@ def require_auth(role=None):
 def ping():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
+@app.get("/addresses")
+@require_auth()
+def addresses_list():
+    db = SessionLocal()
+    try:
+        org_id, _ = _require_org_and_role()
+        q = db.query(OrgAddress).filter(OrgAddress.org_id == org_id)
+        typ = (request.args.get("type") or "").strip()
+        if typ in ("sender", "receiver"): q = q.filter(OrgAddress.type == typ)
+        rows = q.order_by(OrgAddress.business_name.asc().nulls_last()).all()
+        def to_dict(a: OrgAddress):
+            return {
+                "id": a.id, "label": a.label, "type": a.type,
+                "business_name": a.business_name, "address": a.address,
+                "postal_code": a.postal_code, "city": a.city, "country_code": a.country_code,
+                "contact_name": a.contact_name, "phone": a.phone, "email": a.email,
+                "opening_hours": a.opening_hours, "instructions": a.instructions,
+            }
+        return jsonify([to_dict(a) for a in rows])
+    finally:
+        db.close()
 
+@app.post("/addresses")
+@require_auth()
+def addresses_create():
+    db = SessionLocal()
+    try:
+        org_id, _ = _require_org_and_role()
+        d = request.get_json(force=True) or {}
+        key = addr_key({
+            "business_name": d.get("business_name"),
+            "address": d.get("address"),
+            "postal": d.get("postal_code"),
+            "city": d.get("city"),
+            "country": d.get("country_code"),
+        })
+        row = OrgAddress(
+            id=generate_uuid(), org_id=org_id, dedupe_key=key,
+            label=d.get("label"), type=d.get("type"),
+            business_name=d.get("business_name"), address=d.get("address"),
+            postal_code=d.get("postal_code"), city=d.get("city"), country_code=d.get("country_code"),
+            contact_name=d.get("contact_name"), phone=d.get("phone"), email=d.get("email"),
+            opening_hours=d.get("opening_hours"), instructions=d.get("instructions"),
+        )
+        db.add(row); db.commit()
+        return jsonify({"id": row.id}), 201
+    except IntegrityError:
+        db.rollback()
+        # redan finns: OK att vara idempotent
+        return jsonify({"ok": True, "duplicate": True}), 200
+    finally:
+        db.close()
+
+@app.put("/addresses/<addr_id>")
+@require_auth()
+def addresses_update(addr_id):
+    db = SessionLocal()
+    try:
+        org_id, _ = _require_org_and_role()
+        a = db.query(OrgAddress).filter(OrgAddress.id == addr_id, OrgAddress.org_id == org_id).first()
+        if not a: return jsonify({"error":"Not found"}), 404
+        d = request.get_json(force=True) or {}
+        # uppdatera fält
+        for k in ["label","type","business_name","address","postal_code","city","country_code",
+                  "contact_name","phone","email","opening_hours","instructions"]:
+            if k in d: setattr(a, k, d[k])
+
+        # uppdatera dedupe_key om något av basfälten ändrats
+        a.dedupe_key = addr_key({
+            "business_name": a.business_name, "address": a.address, "postal": a.postal_code,
+            "city": a.city, "country": a.country_code
+        })
+        db.commit()
+        return jsonify({"ok": True})
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"error":"Another address with same key exists"}), 409
+    finally:
+        db.close()
+
+@app.delete("/addresses/<addr_id>")
+@require_auth()
+def addresses_delete(addr_id):
+    db = SessionLocal()
+    try:
+        org_id, _ = _require_org_and_role()
+        a = db.query(OrgAddress).filter(OrgAddress.id == addr_id, OrgAddress.org_id == org_id).first()
+        if not a: return jsonify({"error":"Not found"}), 404
+        db.delete(a); db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
 
 # Acceptera både PATCH och POST
 # REMOVE any other /admin/bookings/.../reassign definitions

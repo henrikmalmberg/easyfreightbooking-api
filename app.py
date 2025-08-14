@@ -2123,55 +2123,52 @@ def build_booking_xml(d: dict) -> bytes:
     def cm_to_m(x):
         try:
             return float(x) / 100.0
-        except:
+        except Exception:
             return 0.0
 
     root = ET.Element("CreateBooking")
     booking = ET.SubElement(root, "booking")
     ET.SubElement(booking, "customerBookingId").text = safe_ref(d)
 
-locs = ET.SubElement(booking, "locations")
-for loc_type, src in [
-    (1, d.get("sender")   or d.get("pickup")   or {}),
-    (2, d.get("receiver") or d.get("delivery") or {}),
-]:
-    loc = ET.SubElement(locs, "location")
-    ET.SubElement(loc, "locationType").text = str(loc_type)
-    ET.SubElement(loc, "locationName").text = src.get("business_name", "")
-    ET.SubElement(loc, "streetAddress").text = src.get("address", "")
-    ET.SubElement(loc, "city").text = src.get("city", "")
-    cc = src.get("country") or src.get("country_code") or ""
-    pc = src.get("postal") or src.get("postal_code") or ""
-    ET.SubElement(loc, "countryCode").text = cc
-    ET.SubElement(loc, "zipcode").text = f"{cc}-{pc}"
-    if loc_type == 1:
-        chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
-        ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
-
+    locs = ET.SubElement(booking, "locations")
+    for loc_type, src in [(1, d.get("pickup", {}) or {}), (2, d.get("delivery", {}) or {})]:
+        loc = ET.SubElement(locs, "location")
+        ET.SubElement(loc, "locationType").text = str(loc_type)
+        ET.SubElement(loc, "locationName").text = src.get("business_name", "") or ""
+        ET.SubElement(loc, "streetAddress").text = src.get("address", "") or ""
+        ET.SubElement(loc, "city").text = src.get("city", "") or ""
+        ET.SubElement(loc, "countryCode").text = src.get("country", "") or ""
+        zipcode = src.get("postal", "") or ""
+        ET.SubElement(loc, "zipcode").text = f"{src.get('country','')}-{zipcode}"
+        if loc_type == 1:
+            # Använd requested pickup om satt, annars earliest från offerten
+            chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
+            ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
 
     goods_specs = ET.SubElement(booking, "goodsSpecifications")
-    for g in d.get("goods") or []:
+    for g in (d.get("goods") or []):
         row = ET.SubElement(goods_specs, "goodsSpecification")
-        ET.SubElement(row, "goodsMarks").text = g.get("marks", "")
-        ET.SubElement(row, "goodsPhgType").text = g.get("type", "")
-        ET.SubElement(row, "goodsLength").text = str(g.get("length", ""))
-        ET.SubElement(row, "goodsWidth").text = str(g.get("width", ""))
-        ET.SubElement(row, "goodsHeight").text = str(g.get("height", ""))
+        ET.SubElement(row, "goodsMarks").text = str(g.get("marks", "") or "")
+        ET.SubElement(row, "goodsPhgType").text = str(g.get("type", "") or "")
+        ET.SubElement(row, "goodsLength").text = str(g.get("length", "") or "")
+        ET.SubElement(row, "goodsWidth").text = str(g.get("width", "") or "")
+        ET.SubElement(row, "goodsHeight").text = str(g.get("height", "") or "")
         qty = int(float(g.get("quantity") or 1))
         ET.SubElement(row, "goodsQty").text = str(qty)
         cbm = cm_to_m(g.get("length", 0)) * cm_to_m(g.get("width", 0)) * cm_to_m(g.get("height", 0)) * qty
         ET.SubElement(row, "goodsCBM").text = f"{cbm:.3f}"
         ET.SubElement(row, "goodsLDM").text = f"{float(g.get('ldm', 0) or 0):.2f}"
-        ET.SubElement(row, "goodsWeight").text = str(g.get("weight", ""))
-        ET.SubElement(row, "goodsChgWeight").text = str(int(round(d.get("chargeable_weight", 0))))
+        ET.SubElement(row, "goodsWeight").text = str(g.get("weight", "") or "")
+        ET.SubElement(row, "goodsChgWeight").text = str(int(round(d.get("chargeable_weight", 0) or 0)))
 
     refs_node = ET.SubElement(booking, "references")
     refs = d.get("references") or {}
-    ET.SubElement(refs_node, "loadingReference").text = refs.get("reference1", "")
-    ET.SubElement(refs_node, "unloadingReference").text = refs.get("reference2", "")
-    ET.SubElement(refs_node, "invoiceReference").text = d.get("invoice_reference", "")
+    ET.SubElement(refs_node, "loadingReference").text = refs.get("reference1", "") or ""
+    ET.SubElement(refs_node, "unloadingReference").text = refs.get("reference2", "") or ""
+    ET.SubElement(refs_node, "invoiceReference").text = d.get("invoice_reference", "") or ""
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
 
 def safe_ref(d: dict) -> str:
     p = d.get("pickup", {}); q = d.get("delivery", {})

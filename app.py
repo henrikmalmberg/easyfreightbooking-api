@@ -35,6 +35,7 @@ CORS(app, resources={
         "origins": [
             "https://easyfreightbooking.com",
             "https://easyfreightbooking-dashboard.onrender.com",
+            "https://app.easyfreightbooking.com",
         ],
         "allow_headers": ["Content-Type", "Authorization"],
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]

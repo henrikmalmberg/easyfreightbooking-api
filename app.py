@@ -209,6 +209,12 @@ def admin_booking_reassign(booking_id):
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
+    # direkt efter: data = request.get_json(force=True)
+    # --- sanitize: never trust client-sent user_id ---
+    data.pop("user_id", None)
+    if isinstance(data.get("booker"), dict):
+        data["booker"].pop("user_id", None)
+
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == data["email"]).first()

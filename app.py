@@ -1653,16 +1653,14 @@ def book():
         data = request.get_json(force=True)
         app.logger.info("BOOK payload received")
 
-        # 1) Build XML
+        # 1) Build XML (fungerar efter alias-patch nedan)
         xml_bytes = build_booking_xml(data)
         app.logger.info("XML built, %d bytes", len(xml_bytes))
 
-        # 2) Resolve user + org (IGNORE client-sent user_id unless superadmin and valid)
+        # 2) Resolve user + org
         org_id = request.user["org_id"]
         user_id = request.user["user_id"]
-
         if request.user.get("role") == "superadmin":
-            # Allow override only if explicitly provided and valid
             override_uid = (data.get("booker") or {}).get("user_id") or data.get("user_id")
             if override_uid is not None:
                 try:
@@ -1670,7 +1668,6 @@ def book():
                     u_row = db.query(User).get(override_uid)
                     if not u_row:
                         return jsonify({"ok": False, "error": "Override user_id not found"}), 400
-                    # enforce org consistency if client also passes organization
                     if data.get("organization_id") and int(data["organization_id"]) != u_row.org_id:
                         return jsonify({"ok": False, "error": "Override user_id does not belong to organization_id"}), 400
                     user_id = u_row.id
@@ -1678,14 +1675,32 @@ def book():
                 except Exception:
                     return jsonify({"ok": False, "error": "Invalid override user_id"}), 400
 
-        # Double-check user exists (protect against stale JWT)
-        u_exists = db.query(User.id).filter(User.id == user_id).first()
-        if not u_exists:
+        if not db.query(User.id).filter(User.id == user_id).first():
             return jsonify({"ok": False, "error": "Authenticated user not found"}), 401
+
+        # --- alias helpers ---
+        def pick_addr(src: dict) -> dict:
+            """Accept both 'sender'/'receiver' and 'pickup'/'delivery' + field aliasing."""
+            src = src or {}
+            return {
+                "business_name": src.get("business_name"),
+                "address":       src.get("address"),
+                "postal":        src.get("postal") or src.get("postal_code"),
+                "city":          src.get("city"),
+                "country":       src.get("country") or src.get("country_code"),
+                "contact_name":  src.get("contact_name"),
+                "phone":         src.get("phone"),
+                "email":         src.get("email"),
+                "opening_hours": src.get("opening_hours"),
+                "instructions":  src.get("instructions"),
+            }
+
+        body_sender   = pick_addr(data.get("sender")   or data.get("pickup"))
+        body_receiver = pick_addr(data.get("receiver") or data.get("delivery"))
 
         def mk_addr(src: dict, addr_type: str) -> Address:
             return Address(
-                user_id=user_id,                      # ← always from server
+                user_id=user_id,
                 type=addr_type,
                 business_name=src.get("business_name"),
                 address=src.get("address"),
@@ -1699,24 +1714,65 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-            # 3) Save addresses first (no commit yet)
-            sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
-            receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
-            db.add(sender); db.add(receiver)
+        # 3) Save addresses first
+        sender   = mk_addr(body_sender or {}, "sender")
+        receiver = mk_addr(body_receiver or {}, "receiver")
+        db.add(sender); db.add(receiver)
 
-            # put into org address book (idempotent)
-            upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
-            upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
+        # Lägg även i orgens adressbok (idempotent)
+        upsert_org_address(db, org_id, body_sender or {},   "sender")
+        upsert_org_address(db, org_id, body_receiver or {}, "receiver")
 
-            db.flush()  # get sender.id / receiver.id
+        db.flush()  # ger sender.id / receiver.id
 
-            # 4) Create booking
-            loading_req_date  = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
-            loading_req_time  = parse_hh_mm(data.get("requested_pickup_time"))
-            unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
-            unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
+        # 4) Dates (acceptera alias)
+        loading_req_date   = parse_yyyy_mm_dd(data.get("requested_pickup_date")   or data.get("loading_requested_date"))
+        loading_req_time   = parse_hh_mm     (data.get("requested_pickup_time")   or data.get("loading_requested_time"))
+        unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date") or data.get("unloading_requested_date"))
+        unloading_req_time = parse_hh_mm     (data.get("requested_delivery_time") or data.get("unloading_requested_time"))
 
         booking_obj = None
+        for _ in range(7):
+            bn = generate_booking_number()
+            b = Booking(
+                booking_number=bn,
+                user_id=user_id,
+                org_id=org_id,
+                selected_mode=data.get("selected_mode"),
+                price_eur=float(data.get("price_eur") or 0.0),
+                pickup_date=None,
+                transit_time_days=str(data.get("transit_time_days") or ""),
+                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,
+                sender_address_id=sender.id,
+                receiver_address_id=receiver.id,
+                goods=data.get("goods"),
+                references=data.get("references"),
+                addons=data.get("addons"),
+                asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
+                requested_pickup_date=loading_req_date,
+                asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
+                requested_delivery_date=unloading_req_date,
+                loading_requested_date=loading_req_date,
+                loading_requested_time=loading_req_time,
+                unloading_requested_date=unloading_req_date,
+                unloading_requested_time=unloading_req_time,
+            )
+            db.add(b)
+            try:
+                db.commit()
+                booking_obj = b
+                break
+            except IntegrityError:
+                db.rollback()
+                # Recreate addresses and try again on collision
+                sender   = mk_addr(body_sender or {}, "sender")
+                receiver = mk_addr(body_receiver or {}, "receiver")
+                db.add(sender); db.add(receiver)
+                upsert_org_address(db, org_id, body_sender or {},   "sender")
+                upsert_org_address(db, org_id, body_receiver or {}, "receiver")
+                db.flush()
+                continue
+
         for _ in range(7):
             bn = generate_booking_number()
 
@@ -2106,19 +2162,24 @@ def build_booking_xml(d: dict) -> bytes:
     booking = ET.SubElement(root, "booking")
     ET.SubElement(booking, "customerBookingId").text = safe_ref(d)
 
-    locs = ET.SubElement(booking, "locations")
-    for loc_type, src in [(1, d.get("pickup", {})), (2, d.get("delivery", {}))]:
-        loc = ET.SubElement(locs, "location")
-        ET.SubElement(loc, "locationType").text = str(loc_type)
-        ET.SubElement(loc, "locationName").text = src.get("business_name", "")
-        ET.SubElement(loc, "streetAddress").text = src.get("address", "")
-        ET.SubElement(loc, "city").text = src.get("city", "")
-        ET.SubElement(loc, "countryCode").text = src.get("country", "")
-        zipcode = src.get("postal", "")
-        ET.SubElement(loc, "zipcode").text = f"{src.get('country','')}-{zipcode}"
-        if loc_type == 1:
-            chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
-            ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
+locs = ET.SubElement(booking, "locations")
+for loc_type, src in [
+    (1, d.get("sender")   or d.get("pickup")   or {}),
+    (2, d.get("receiver") or d.get("delivery") or {}),
+]:
+    loc = ET.SubElement(locs, "location")
+    ET.SubElement(loc, "locationType").text = str(loc_type)
+    ET.SubElement(loc, "locationName").text = src.get("business_name", "")
+    ET.SubElement(loc, "streetAddress").text = src.get("address", "")
+    ET.SubElement(loc, "city").text = src.get("city", "")
+    cc = src.get("country") or src.get("country_code") or ""
+    pc = src.get("postal") or src.get("postal_code") or ""
+    ET.SubElement(loc, "countryCode").text = cc
+    ET.SubElement(loc, "zipcode").text = f"{cc}-{pc}"
+    if loc_type == 1:
+        chosen = d.get("requested_pickup_date") or d.get("earliest_pickup")
+        ET.SubElement(loc, "planningDateUTC").text = to_utc_iso(chosen)
+
 
     goods_specs = ET.SubElement(booking, "goodsSpecifications")
     for g in d.get("goods") or []:

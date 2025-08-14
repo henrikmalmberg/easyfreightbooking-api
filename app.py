@@ -1764,10 +1764,8 @@ def book():
         if not booking_obj:
             raise RuntimeError("Could not allocate a unique booking number after several attempts")
 
-
-
-                booking_id = booking_obj.id
-                booking_number = booking_obj.booking_number
+        booking_id = booking_obj.id
+        booking_number = booking_obj.booking_number
 
         # 5) Email
         to_confirm = set()

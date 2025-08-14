@@ -1718,7 +1718,7 @@ def book():
 
             booking_obj = None
             for _ in range(7):
-        bn = generate_booking_number()
+            bn = generate_booking_number()
 
     b = Booking(
         booking_number=bn,

@@ -1650,16 +1650,13 @@ EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
 def book():
     db = SessionLocal()
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True) or {}
         app.logger.info("BOOK payload received")
 
-        # 1) Build XML (fungerar efter alias-patch nedan)
-        xml_bytes = build_booking_xml(data)
-        app.logger.info("XML built, %d bytes", len(xml_bytes))
-
-        # 2) Resolve user + org
+        # 1) Resolve user + org (ignorera client-sent user_id om inte superadmin uttryckligen sätter den)
         org_id = request.user["org_id"]
         user_id = request.user["user_id"]
+
         if request.user.get("role") == "superadmin":
             override_uid = (data.get("booker") or {}).get("user_id") or data.get("user_id")
             if override_uid is not None:
@@ -1675,12 +1672,12 @@ def book():
                 except Exception:
                     return jsonify({"ok": False, "error": "Invalid override user_id"}), 400
 
+        # dubbelkolla att användaren finns (skydd mot föråldrad JWT)
         if not db.query(User.id).filter(User.id == user_id).first():
             return jsonify({"ok": False, "error": "Authenticated user not found"}), 401
 
-        # --- alias helpers ---
-        def pick_addr(src: dict) -> dict:
-            """Accept both 'sender'/'receiver' and 'pickup'/'delivery' + field aliasing."""
+        # 2) Fältalias: acceptera sender/receiver OCH pickup/delivery (+ postal_code/country_code)
+        def pick_addr(src: dict | None) -> dict:
             src = src or {}
             return {
                 "business_name": src.get("business_name"),
@@ -1714,23 +1711,24 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-        # 3) Save addresses first
+        # 3) Spara adresser (ingen commit än)
         sender   = mk_addr(body_sender or {}, "sender")
         receiver = mk_addr(body_receiver or {}, "receiver")
         db.add(sender); db.add(receiver)
 
-        # Lägg även i orgens adressbok (idempotent)
+        # in i orgens adressbok (idempotent)
         upsert_org_address(db, org_id, body_sender or {},   "sender")
         upsert_org_address(db, org_id, body_receiver or {}, "receiver")
 
-        db.flush()  # ger sender.id / receiver.id
+        db.flush()  # => sender.id / receiver.id
 
-        # 4) Dates (acceptera alias)
+        # 4) Datum/tider (acceptera alias)
         loading_req_date   = parse_yyyy_mm_dd(data.get("requested_pickup_date")   or data.get("loading_requested_date"))
         loading_req_time   = parse_hh_mm     (data.get("requested_pickup_time")   or data.get("loading_requested_time"))
         unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date") or data.get("unloading_requested_date"))
         unloading_req_time = parse_hh_mm     (data.get("requested_delivery_time") or data.get("unloading_requested_time"))
 
+        # 5) Skapa booking – försök med upp till 7 unika bokningsnummer
         booking_obj = None
         for _ in range(7):
             bn = generate_booking_number()
@@ -1763,59 +1761,14 @@ def book():
                 booking_obj = b
                 break
             except IntegrityError:
+                # kollision på booking_number → börja om (addresses rullas också tillbaka)
                 db.rollback()
-                # Recreate addresses and try again on collision
                 sender   = mk_addr(body_sender or {}, "sender")
                 receiver = mk_addr(body_receiver or {}, "receiver")
                 db.add(sender); db.add(receiver)
                 upsert_org_address(db, org_id, body_sender or {},   "sender")
                 upsert_org_address(db, org_id, body_receiver or {}, "receiver")
                 db.flush()
-                continue
-
-        for _ in range(7):
-            bn = generate_booking_number()
-
-            b = Booking(
-                booking_number=bn,
-                user_id=user_id,
-                org_id=org_id,
-                selected_mode=data.get("selected_mode"),
-                price_eur=float(data.get("price_eur") or 0.0),
-                pickup_date=None,
-                transit_time_days=str(data.get("transit_time_days") or ""),
-                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,
-                sender_address_id=sender.id,
-                receiver_address_id=receiver.id,
-                goods=data.get("goods"),
-                references=data.get("references"),
-                addons=data.get("addons"),
-                asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
-                requested_pickup_date=loading_req_date,
-                asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
-                requested_delivery_date=unloading_req_date,
-                loading_requested_date=loading_req_date,
-                loading_requested_time=loading_req_time,
-                unloading_requested_date=unloading_req_date,
-                unloading_requested_time=unloading_req_time,
-            )
-            db.add(b)
-            try:
-                db.commit()
-                booking_obj = b
-                break
-            except IntegrityError:
-                # booking number collision → rollback nukar även adresser
-                db.rollback()
-
-                # re-add addresses + org-address upserts and flush again, then retry
-                sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
-                receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
-                db.add(sender); db.add(receiver)
-                upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
-                upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
-                db.flush()
-                continue
 
         if not booking_obj:
             raise RuntimeError("Could not allocate a unique booking number after several attempts")
@@ -1823,31 +1776,44 @@ def book():
         booking_id = booking_obj.id
         booking_number = booking_obj.booking_number
 
-        # 5) Email
+        # 6) Bygg XML på en payload som säkert har pickup/delivery med 'postal'/'country'
+        xml_payload = dict(data)  # shallow copy räcker (bara läsning i build_booking_xml)
+        xml_payload["pickup"]   = body_sender
+        xml_payload["delivery"] = body_receiver
+        xml_bytes = build_booking_xml(xml_payload)
+        app.logger.info("XML built, %d bytes", len(xml_bytes))
+
+        # 7) E-post (confirmation + intern)
         to_confirm = set()
-        if data.get("booker", {}).get("email"):
+        if (data.get("booker") or {}).get("email"):
             to_confirm.add(data["booker"]["email"])
         uc_email = (data.get("update_contact") or {}).get("email")
         if uc_email and uc_email.lower() not in {e.lower() for e in to_confirm}:
             to_confirm.add(uc_email)
 
         subject_conf = f"EFB Booking confirmation – {booking_number}"
-        body_conf = render_text_confirmation(data)
+        body_conf = render_text_confirmation(xml_payload)  # använder samma aliaserade payload
         if EMAIL_ENABLED:
             for rcpt in to_confirm:
-                app.logger.info("Sending confirmation to %s", rcpt)
-                send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
+                try:
+                    app.logger.info("Sending confirmation to %s", rcpt)
+                    send_email(to=rcpt, subject=subject_conf, body=body_conf, attachments=[])
+                except Exception as e:
+                    app.logger.warning("Failed sending confirmation to %s: %s", rcpt, e)
 
         subject_internal = f"EFB NEW BOOKING – {booking_number}"
-        body_internal = render_text_internal(data)
+        body_internal = render_text_internal(xml_payload)
         if EMAIL_ENABLED:
-            app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
-            send_email(
-                to=INTERNAL_BOOKING_EMAIL,
-                subject=subject_internal,
-                body=body_internal,
-                attachments=[("booking.xml", "application/xml", xml_bytes)],
-            )
+            try:
+                app.logger.info("Sending internal booking email to %s", INTERNAL_BOOKING_EMAIL)
+                send_email(
+                    to=INTERNAL_BOOKING_EMAIL,
+                    subject=subject_internal,
+                    body=body_internal,
+                    attachments=[("booking.xml", "application/xml", xml_bytes)],
+                )
+            except Exception as e:
+                app.logger.warning("Failed sending internal email: %s", e)
 
         saved = {
             "booking_id": booking_id,
@@ -1858,12 +1824,14 @@ def book():
             "requested_delivery_date": booking_obj.requested_delivery_date.isoformat() if booking_obj.requested_delivery_date else None,
         }
         return jsonify({"ok": True, "email_enabled": EMAIL_ENABLED, **saved})
+
     except Exception as e:
         db.rollback()
         app.logger.exception("BOOK failed")
         return jsonify({"ok": False, "error": str(e)}), 500
     finally:
         db.close()
+
 
 # =========================================================
 # PATCH booking (plan/utfall/status)

@@ -1522,16 +1522,35 @@ def book():
         xml_bytes = build_booking_xml(data)
         app.logger.info("XML built, %d bytes", len(xml_bytes))
 
-        # 2) Prepare data
-        user_id = (data.get("booker") or {}).get("user_id") or data.get("user_id") or request.user["user_id"]
-        try:
-            user_id = int(user_id)
-        except Exception:
-            user_id = request.user["user_id"]
+        # 2) Resolve user + org (IGNORE client-sent user_id unless superadmin and valid)
+        org_id = request.user["org_id"]
+        user_id = request.user["user_id"]
+
+        if request.user.get("role") == "superadmin":
+            # Allow override only if explicitly provided and valid
+            override_uid = (data.get("booker") or {}).get("user_id") or data.get("user_id")
+            if override_uid is not None:
+                try:
+                    override_uid = int(override_uid)
+                    u_row = db.query(User).get(override_uid)
+                    if not u_row:
+                        return jsonify({"ok": False, "error": "Override user_id not found"}), 400
+                    # enforce org consistency if client also passes organization
+                    if data.get("organization_id") and int(data["organization_id"]) != u_row.org_id:
+                        return jsonify({"ok": False, "error": "Override user_id does not belong to organization_id"}), 400
+                    user_id = u_row.id
+                    org_id  = u_row.org_id
+                except Exception:
+                    return jsonify({"ok": False, "error": "Invalid override user_id"}), 400
+
+        # Double-check user exists (protect against stale JWT)
+        u_exists = db.query(User.id).filter(User.id == user_id).first()
+        if not u_exists:
+            return jsonify({"ok": False, "error": "Authenticated user not found"}), 401
 
         def mk_addr(src: dict, addr_type: str) -> Address:
             return Address(
-                user_id=user_id,
+                user_id=user_id,                      # ← always from server
                 type=addr_type,
                 business_name=src.get("business_name"),
                 address=src.get("address"),
@@ -1551,38 +1570,33 @@ def book():
         db.add(sender); db.add(receiver)
         db.commit()
 
-        org_id = request.user["org_id"]
-
+        # 4) Create booking
         loading_req_date = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
         loading_req_time = parse_hh_mm(data.get("requested_pickup_time"))
         unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
         unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
 
-        # 4) Create booking (retry booking number on collision)
         booking_obj = None
         for _ in range(7):
             bn = generate_booking_number()
             b = Booking(
                 booking_number=bn,
-                user_id=user_id,
-                org_id=org_id,
+                user_id=user_id,                      # ← from server
+                org_id=org_id,                        # ← from server
                 selected_mode=data.get("selected_mode"),
                 price_eur=float(data.get("price_eur") or 0.0),
                 pickup_date=None,
                 transit_time_days=str(data.get("transit_time_days") or ""),
                 co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,
-
                 sender_address_id=sender.id,
                 receiver_address_id=receiver.id,
                 goods=data.get("goods"),
                 references=data.get("references"),
                 addons=data.get("addons"),
-
                 asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
                 requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
                 asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
                 requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-
                 loading_requested_date=loading_req_date,
                 loading_requested_time=loading_req_time,
                 unloading_requested_date=unloading_req_date,

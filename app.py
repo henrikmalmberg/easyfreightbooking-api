@@ -1716,11 +1716,11 @@ def book():
             unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
             unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
 
-            booking_obj = None
-            for _ in range(7):
-                bn = generate_booking_number()
+        booking_obj = None
+        for _ in range(7):
+            bn = generate_booking_number()
 
-                b = Booking(
+            b = Booking(
                 booking_number=bn,
                 user_id=user_id,
                 org_id=org_id,
@@ -1761,8 +1761,9 @@ def book():
                 db.flush()
                 continue
 
-            if not booking_obj:
-                raise RuntimeError("Could not allocate a unique booking number after several attempts")
+        if not booking_obj:
+            raise RuntimeError("Could not allocate a unique booking number after several attempts")
+
 
 
                 booking_id = booking_obj.id

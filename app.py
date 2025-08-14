@@ -152,10 +152,7 @@ def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
     )
     db.add(row)
 
-# I /book, strax efter att du har `org_id` och innan/efter address-commit:
-upsert_org_address(db, org_id, data.get("pickup", {}) or {}, "sender")
-upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
-# (ingen extra commit behövs om du ändå committar direkt efter)
+
 
 
 
@@ -1702,55 +1699,71 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-        # 3) Save addresses first
-        sender = mk_addr(data.get("pickup", {}) or {}, "sender")
+# 3) Save addresses first (no commit yet)
+sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
+receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
+db.add(sender); db.add(receiver)
+
+# put into org address book (idempotent)
+upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
+upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
+
+db.flush()  # get sender.id / receiver.id
+
+# 4) Create booking
+loading_req_date  = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
+loading_req_time  = parse_hh_mm(data.get("requested_pickup_time"))
+unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
+unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
+
+booking_obj = None
+for _ in range(7):
+    bn = generate_booking_number()
+
+    b = Booking(
+        booking_number=bn,
+        user_id=user_id,
+        org_id=org_id,
+        selected_mode=data.get("selected_mode"),
+        price_eur=float(data.get("price_eur") or 0.0),
+        pickup_date=None,
+        transit_time_days=str(data.get("transit_time_days") or ""),
+        co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,
+        sender_address_id=sender.id,
+        receiver_address_id=receiver.id,
+        goods=data.get("goods"),
+        references=data.get("references"),
+        addons=data.get("addons"),
+        asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
+        requested_pickup_date=loading_req_date,
+        asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
+        requested_delivery_date=unloading_req_date,
+        loading_requested_date=loading_req_date,
+        loading_requested_time=loading_req_time,
+        unloading_requested_date=unloading_req_date,
+        unloading_requested_time=unloading_req_time,
+    )
+    db.add(b)
+    try:
+        db.commit()
+        booking_obj = b
+        break
+    except IntegrityError:
+        # booking number collision → rollback nukar även adresser
+        db.rollback()
+
+        # re-add addresses + org-address upserts and flush again, then retry
+        sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
         receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
         db.add(sender); db.add(receiver)
-        db.commit()
+        upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
+        upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
+        db.flush()
+        continue
 
-        # 4) Create booking
-        loading_req_date = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
-        loading_req_time = parse_hh_mm(data.get("requested_pickup_time"))
-        unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
-        unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
+if not booking_obj:
+    raise RuntimeError("Could not allocate a unique booking number after several attempts")
 
-        booking_obj = None
-        for _ in range(7):
-            bn = generate_booking_number()
-            b = Booking(
-                booking_number=bn,
-                user_id=user_id,                      # ← from server
-                org_id=org_id,                        # ← from server
-                selected_mode=data.get("selected_mode"),
-                price_eur=float(data.get("price_eur") or 0.0),
-                pickup_date=None,
-                transit_time_days=str(data.get("transit_time_days") or ""),
-                co2_emissions=float(data.get("co2_emissions_grams") or 0.0) / 1000.0,
-                sender_address_id=sender.id,
-                receiver_address_id=receiver.id,
-                goods=data.get("goods"),
-                references=data.get("references"),
-                addons=data.get("addons"),
-                asap_pickup=bool(data.get("asap_pickup")) if data.get("asap_pickup") is not None else True,
-                requested_pickup_date=parse_yyyy_mm_dd(data.get("requested_pickup_date")),
-                asap_delivery=bool(data.get("asap_delivery")) if data.get("asap_delivery") is not None else True,
-                requested_delivery_date=parse_yyyy_mm_dd(data.get("requested_delivery_date")),
-                loading_requested_date=loading_req_date,
-                loading_requested_time=loading_req_time,
-                unloading_requested_date=unloading_req_date,
-                unloading_requested_time=unloading_req_time,
-            )
-            db.add(b)
-            try:
-                db.commit()
-                booking_obj = b
-                break
-            except IntegrityError:
-                db.rollback()
-                continue
-
-        if not booking_obj:
-            raise RuntimeError("Could not allocate a unique booking number after several attempts")
 
         booking_id = booking_obj.id
         booking_number = booking_obj.booking_number

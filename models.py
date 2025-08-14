@@ -178,6 +178,37 @@ from sqlalchemy.sql import func
 
 # ...
 
+# models.py (lägg till)
+from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint, Text
+from sqlalchemy.orm import relationship
+
+class OrgAddress(Base):
+    __tablename__ = "org_addresses"
+
+    id            = Column(String, primary_key=True)              # uuid hex
+    org_id        = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+
+    label         = Column(String(120), nullable=True)            # valfritt visningsnamn
+    type          = Column(String(30), nullable=True)             # "sender"/"receiver"/None (för filtrering)
+    business_name = Column(String(200), nullable=True)
+    address       = Column(String(300), nullable=True)
+    postal_code   = Column(String(32),  nullable=True)
+    city          = Column(String(120), nullable=True)
+    country_code  = Column(String(2),   nullable=True)
+    contact_name  = Column(String(120), nullable=True)
+    phone         = Column(String(60),  nullable=True)
+    email         = Column(String(200), nullable=True)
+    opening_hours = Column(String(200), nullable=True)
+    instructions  = Column(Text,        nullable=True)
+
+    # För dedup/upsert: normaliserad nyckel
+    dedupe_key    = Column(String(512), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "dedupe_key", name="uq_orgaddr_key"),
+    )
+
+
 class PricingConfig(Base):
     __tablename__ = "pricing_configs"
 

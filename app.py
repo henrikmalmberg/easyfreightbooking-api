@@ -1699,26 +1699,26 @@ def book():
                 instructions=src.get("instructions"),
             )
 
-# 3) Save addresses first (no commit yet)
-sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
-receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
-db.add(sender); db.add(receiver)
+            # 3) Save addresses first (no commit yet)
+            sender   = mk_addr(data.get("pickup", {})   or {}, "sender")
+            receiver = mk_addr(data.get("delivery", {}) or {}, "receiver")
+            db.add(sender); db.add(receiver)
 
-# put into org address book (idempotent)
-upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
-upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
+            # put into org address book (idempotent)
+            upsert_org_address(db, org_id, data.get("pickup", {})   or {}, "sender")
+            upsert_org_address(db, org_id, data.get("delivery", {}) or {}, "receiver")
 
-db.flush()  # get sender.id / receiver.id
+            db.flush()  # get sender.id / receiver.id
 
-# 4) Create booking
-loading_req_date  = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
-loading_req_time  = parse_hh_mm(data.get("requested_pickup_time"))
-unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
-unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
+            # 4) Create booking
+            loading_req_date  = parse_yyyy_mm_dd(data.get("requested_pickup_date"))
+            loading_req_time  = parse_hh_mm(data.get("requested_pickup_time"))
+            unloading_req_date = parse_yyyy_mm_dd(data.get("requested_delivery_date"))
+            unloading_req_time = parse_hh_mm(data.get("requested_delivery_time"))
 
-booking_obj = None
-for _ in range(7):
-    bn = generate_booking_number()
+            booking_obj = None
+            for _ in range(7):
+        bn = generate_booking_number()
 
     b = Booking(
         booking_number=bn,

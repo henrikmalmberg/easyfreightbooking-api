@@ -91,45 +91,58 @@ JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
 def cmr_pdf(bid):
     db = SessionLocal()
     try:
+        # --- Lookup by numeric id, booking number, or UUID -------------
         b = None
-        # 1) numeriskt id?
         if bid.isdigit():
             b = db.get(Booking, int(bid))
-        # 2) bokningsnummer (XX-LLL-#####)?
-        elif BOOKING_REGEX.fullmatch(bid.upper()):
-            b = (db.query(Booking)
-                   .filter(Booking.booking_number == bid.upper())
-                   .first())
-        # 3) UUID (om du i framtiden skulle ha UUID som id)
         else:
-            try:
-                uuid.UUID(bid)
-                b = (db.query(Booking)
-                       .filter(Booking.id == bid)  # funkar bara om kolumnen är str/UUID
-                       .first())
-            except Exception:
-                pass
+            code = (bid or "").upper()
+            if BOOKING_REGEX.fullmatch(code):
+                b = db.query(Booking).filter(Booking.booking_number == code).first()
+            else:
+                try:
+                    uuid.UUID(bid)
+                    # Bara om din kolumn faktiskt är UUID/sträng
+                    b = db.query(Booking).filter(Booking.id == bid).first()
+                except Exception:
+                    pass
 
         if not b:
             return jsonify({"error": "Not found"}), 404
 
-        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+        # --- Basic guards så vi inte kraschar i PDF-generatorn ----------
+        if not b.sender_address or not b.receiver_address:
+            return jsonify({"error": "Booking missing sender/receiver address"}), 409
+        if not isinstance(getattr(b, "goods", None), (list, tuple)):
+            # pdf_utils brukar vilja ha lista
+            b.goods = []
 
+        # --- Generate ---------------------------------------------------
+        try:
+            pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+            if not pdf or not isinstance(pdf, (bytes, bytearray)):
+                raise RuntimeError("PDF generator returned empty/invalid bytes")
+        except Exception as e:
+            app.logger.exception("CMR PDF generation failed for booking %s", bid)
+            return jsonify({"error": "PDF generation failed", "detail": str(e)}), 500
+
+        # --- Send file --------------------------------------------------
+        fname = f'CMR_{b.booking_number or (b.id if isinstance(b.id, int) else "booking")}.pdf'
         return Response(
             pdf,
             status=200,
             headers={
                 "Content-Type": "application/pdf",
-                "Content-Disposition":
-                    f'attachment; filename="CMR_{b.booking_number or b.id}.pdf"',
+                "Content-Disposition": f'attachment; filename="{fname}"',
                 "Cache-Control": "no-store",
             },
         )
-    except Exception:
-        app.logger.exception("CMR PDF generation failed")
-        return jsonify({"error": "PDF generation failed"}), 500
+    except Exception as e:
+        app.logger.exception("Unhandled error in CMR endpoint for %s", bid)
+        return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
+
 
 
 

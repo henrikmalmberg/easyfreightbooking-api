@@ -27,10 +27,26 @@ from models import OrgAddress
 from flask import Response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from pdf_utils import generate_cmr_pdf_bytes
-from flask import request
-from flask import Response, jsonify
 from flask_jwt_extended import jwt_required
 from pdf_utils import generate_cmr_pdf_bytes
+
+# app.py (överst)
+import os, jwt
+from flask import Flask, request, abort, g, jsonify
+from functools import wraps
+from datetime import datetime, timedelta, timezone
+
+app = Flask(__name__)
+
+def get_jwt_secret():
+    s = os.environ.get("JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
+    if not s:
+        raise RuntimeError("JWT secret missing")
+    return s
+
+JWT_SECRET = get_jwt_secret()
+JWT_ALG = "HS256"
+
 
 CARRIER_INFO = {
     "name": "Easy Freight Booking Logistics AB",
@@ -40,32 +56,7 @@ CARRIER_INFO = {
     "email": "operations@easyfreightbooking.com",
 }
 
-# --- add near the top of app.py ---
-import os, jwt
-from flask import Flask, request, g, abort
-from functools import wraps
 
-app = Flask(__name__)
-JWT_SECRET = os.environ.get("JWT_SECRET") or os.environ["JWT_SECRET_KEY"]
-
-def require_auth(scopes=None):
-    def _decorator(fn):
-        @wraps(fn)
-        def _wrapped(*args, **kwargs):
-            auth = request.headers.get("Authorization", "")
-            if not auth.startswith("Bearer "):
-                abort(401, "Missing Bearer token")
-            token = auth.split(" ", 1)[1]
-            try:
-                claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            except jwt.ExpiredSignatureError:
-                abort(401, "Token expired")
-            except jwt.InvalidTokenError:
-                abort(401, "Invalid token")
-            g.jwt = claims
-            return fn(*args, **kwargs)
-        return _wrapped
-    return _decorator
 
 
 

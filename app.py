@@ -145,7 +145,7 @@ def accept_jwt_query_param():
         request.headers.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
-JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
 
 # --- CMR helpers ------------------------------------------------------------
 def _booking_lookup(db, bid: str):
@@ -252,30 +252,7 @@ def cmr_pdf_by_id(booking_id: int):
 
 
 
-@app.get("/bookings/<booking_number>/cmr.pdf", endpoint="cmr_pdf_by_number")
-@require_auth()
-def cmr_pdf_by_number(booking_number: str):
-    db = SessionLocal()
-    try:
-        b = db.query(Booking).filter(Booking.booking_number == booking_number.upper()).first()
-        if not b:
-            return jsonify({"error": "Not found"}), 404
 
-        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
-        return Response(
-            pdf,
-            status=200,
-            headers={
-                "Content-Type": "application/pdf",
-                "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or b.id}.pdf"',
-                "Cache-Control": "no-store",
-            },
-        )
-    except Exception:
-        app.logger.exception("CMR PDF generation failed (by number)")
-        return jsonify({"error": "PDF generation failed"}), 500
-    finally:
-        db.close()
 
 
 @app.get("/bookings/<bid>/cmr.pdf", endpoint="cmr_pdf")
@@ -460,29 +437,6 @@ def extract_token_from_request():
     # 2) Fallback för nya-flik-länkar: ?jwt= eller ?token=
     q = request.args.get("jwt") or request.args.get("token")
     return q
-
-def require_auth():
-    def _decorator(fn):
-        @wraps(fn)
-        def _wrapped(*args, **kwargs):
-            token = extract_token_from_request()
-            if not token:
-                abort(401, "Missing token")
-
-            try:
-                claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-            except jwt.ExpiredSignatureError:
-                abort(401, "Token expired")
-            except jwt.InvalidTokenError:
-                abort(401, "Invalid token")
-
-            g.jwt = claims
-            g.user_id = claims.get("user_id")
-            g.role = claims.get("role")
-            g.org_id = claims.get("org_id")
-            return fn(*args, **kwargs)
-        return _wrapped
-    return _decorator
 
 
 def upsert_org_address(db, org_id: int, src: dict, addr_type: str):

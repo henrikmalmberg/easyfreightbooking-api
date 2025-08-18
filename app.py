@@ -76,57 +76,79 @@ def accept_jwt_query_param():
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
 
+# --- CMR helpers ------------------------------------------------------------
+def _booking_lookup(db, bid: str):
+    # id (int) eller bokningsnummer (AA-AAA-#####)
+    if bid.isdigit():
+        return db.get(Booking, int(bid))
+    code = (bid or "").upper()
+    if BOOKING_REGEX.fullmatch(code):
+        return db.query(Booking).filter(Booking.booking_number == code).first()
+    # (om din ID-kolumn kan vara UUID/sträng, lägg ev. fallback här)
+    return None
 
-# Ta bort/kommentera bort tidigare:
-# @app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_v2")
-# def cmr_pdf_v2(...):
-# ...
-# @app.get("/bookings/<int:booking_id>/cmr.pdf")
-# def get_cmr_pdf(...):
-# ...
+def _safe(s):
+    return "" if s is None else str(s)
 
-# En enda, flexibel endpoint:
+def _ensure_pdf_safe(b: Booking):
+    """
+    Gör bokningen säker för pdf_utils: listor får inte vara None, strängar inte None osv.
+    Anpassa vid behov till din pdf_utils.
+    """
+    # addresses måste finnas
+    if not b.sender_address or not b.receiver_address:
+        raise ValueError("Booking missing sender/receiver address")
+
+    # goods ska vara lista
+    if getattr(b, "goods", None) is None:
+        b.goods = []
+    # normalisera varje goods-rad så keys finns
+    normed = []
+    for g in b.goods:
+        g = g or {}
+        normed.append({
+            "quantity": int(float(g.get("quantity") or 1)),
+            "type": _safe(g.get("type")),
+            "length": _safe(g.get("length")),
+            "width":  _safe(g.get("width")),
+            "height": _safe(g.get("height")),
+            "ldm":    _safe(g.get("ldm") or 0),
+            "weight": _safe(g.get("weight") or 0),
+            "marks":  _safe(g.get("marks")),
+        })
+    b.goods = normed
+
+    # se till att kritiska addressfält inte är None
+    for a in (b.sender_address, b.receiver_address):
+        a.business_name = _safe(a.business_name)
+        a.address       = _safe(a.address)
+        a.city          = _safe(a.city)
+        a.country_code  = _safe(a.country_code)
+        a.postal_code   = _safe(a.postal_code)
+        a.contact_name  = _safe(getattr(a, "contact_name", ""))
+        a.phone         = _safe(getattr(a, "phone", ""))
+        a.email         = _safe(getattr(a, "email", ""))
+
+# --- CMR routes -------------------------------------------------------------
+
 @app.get("/bookings/<bid>/cmr.pdf", endpoint="cmr_pdf")
 @jwt_required()
 def cmr_pdf(bid):
     db = SessionLocal()
     try:
-        # --- Lookup by numeric id, booking number, or UUID -------------
-        b = None
-        if bid.isdigit():
-            b = db.get(Booking, int(bid))
-        else:
-            code = (bid or "").upper()
-            if BOOKING_REGEX.fullmatch(code):
-                b = db.query(Booking).filter(Booking.booking_number == code).first()
-            else:
-                try:
-                    uuid.UUID(bid)
-                    # Bara om din kolumn faktiskt är UUID/sträng
-                    b = db.query(Booking).filter(Booking.id == bid).first()
-                except Exception:
-                    pass
-
+        b = _booking_lookup(db, bid)
         if not b:
             return jsonify({"error": "Not found"}), 404
 
-        # --- Basic guards så vi inte kraschar i PDF-generatorn ----------
-        if not b.sender_address or not b.receiver_address:
-            return jsonify({"error": "Booking missing sender/receiver address"}), 409
-        if not isinstance(getattr(b, "goods", None), (list, tuple)):
-            # pdf_utils brukar vilja ha lista
-            b.goods = []
-
-        # --- Generate ---------------------------------------------------
         try:
+            _ensure_pdf_safe(b)
             pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
-            if not pdf or not isinstance(pdf, (bytes, bytearray)):
-                raise RuntimeError("PDF generator returned empty/invalid bytes")
+            if not pdf:
+                raise RuntimeError("PDF generator returned empty bytes")
         except Exception as e:
-            app.logger.exception("CMR PDF generation failed for booking %s", bid)
+            app.logger.exception("CMR PDF generation failed for %s", bid)
             return jsonify({"error": "PDF generation failed", "detail": str(e)}), 500
 
-        # --- Send file --------------------------------------------------
         fname = f'CMR_{b.booking_number or (b.id if isinstance(b.id, int) else "booking")}.pdf'
         return Response(
             pdf,
@@ -138,10 +160,47 @@ def cmr_pdf(bid):
             },
         )
     except Exception as e:
-        app.logger.exception("Unhandled error in CMR endpoint for %s", bid)
+        app.logger.exception("Unhandled error in cmr_pdf(%s)", bid)
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
+
+# Hjälprutt för felsökning: visar vad som skulle skickas till PDF:n
+@app.get("/bookings/<bid>/cmr.test")
+@jwt_required()
+def cmr_test(bid):
+    db = SessionLocal()
+    try:
+        b = _booking_lookup(db, bid)
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+        try:
+            _ensure_pdf_safe(b)
+        except Exception as e:
+            return jsonify({"ok": False, "precheck_error": str(e)}), 409
+
+        return jsonify({
+            "ok": True,
+            "booking_number": b.booking_number,
+            "sender": {
+                "name": b.sender_address.business_name,
+                "addr": b.sender_address.address,
+                "postal": b.sender_address.postal_code,
+                "city": b.sender_address.city,
+                "cc": b.sender_address.country_code,
+            },
+            "receiver": {
+                "name": b.receiver_address.business_name,
+                "addr": b.receiver_address.address,
+                "postal": b.receiver_address.postal_code,
+                "city": b.receiver_address.city,
+                "cc": b.receiver_address.country_code,
+            },
+            "goods": b.goods,
+        })
+    finally:
+        db.close()
+
 
 
 

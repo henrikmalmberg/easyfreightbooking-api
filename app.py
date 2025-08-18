@@ -398,29 +398,39 @@ def parse_hh_mm(s: str | None):
     except Exception:
         return None
 
-def require_auth(role=None):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            token = request.headers.get("Authorization", "").replace("Bearer ", "")
+def extract_token_from_request():
+    # 1) Authorization: Bearer <token>
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1]
+
+    # 2) Fallback för nya-flik-länkar: ?jwt= eller ?token=
+    q = request.args.get("jwt") or request.args.get("token")
+    return q
+
+def require_auth():
+    def _decorator(fn):
+        @wraps(fn)
+        def _wrapped(*args, **kwargs):
+            token = extract_token_from_request()
             if not token:
-                return jsonify({"error": "Missing token"}), 401
+                abort(401, "Missing token")
+
             try:
-                decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+                claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
             except jwt.ExpiredSignatureError:
-                return jsonify({"error": "Token expired"}), 401
-            except Exception:
-                return jsonify({"error": "Invalid token"}), 401
+                abort(401, "Token expired")
+            except jwt.InvalidTokenError:
+                abort(401, "Invalid token")
 
-            request.user = decoded  # { user_id, org_id, role }
+            g.jwt = claims
+            g.user_id = claims.get("user_id")
+            g.role = claims.get("role")
+            g.org_id = claims.get("org_id")
+            return fn(*args, **kwargs)
+        return _wrapped
+    return _decorator
 
-            # superadmin passerar alltid
-            if role and decoded.get("role") not in (role, "superadmin"):
-                return jsonify({"error": "Forbidden"}), 403
-
-            return f(*args, **kwargs)
-        return wrapper
-    return decorator
 
 def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
     key = addr_key({

@@ -57,11 +57,45 @@ def extract_token_from_request():
         return auth.split(" ", 1)[1]
     return request.args.get("jwt") or request.args.get("token")
 
-def require_auth(role=None):
+# ==== AUTH CORE (placera högt upp i filen, före alla @require_auth) ====
+from flask import abort, g, request, jsonify
+
+def get_jwt_secret():
+    s = (os.environ.get("JWT_SECRET")
+         or os.environ.get("JWT_SECRET_KEY")
+         or os.environ.get("SECRET_KEY"))
+    if not s:
+        raise RuntimeError("JWT secret missing")
+    return s
+
+JWT_SECRET = get_jwt_secret()
+JWT_ALG = "HS256"
+JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
+def extract_token_from_request():
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1]
+    # funkar för länkar med ?jwt= eller ?token=
+    return request.args.get("jwt") or request.args.get("token")
+
+def require_auth(role=None, *roles):
     """
-    role: None, 'admin'/'superadmin' eller lista av roller.
-    Sätter request.user = { user_id, org_id, role }.
+    Exempel:
+      @require_auth()                       # alla inloggade
+      @require_auth("admin")                # en roll
+      @require_auth("admin", "superadmin")  # flera roller
+      @require_auth(role="superadmin")      # keyword
     """
+    allowed = set()
+    if role is not None:
+        if isinstance(role, (list, tuple, set)):
+            allowed.update(role)
+        else:
+            allowed.add(role)
+    if roles:
+        allowed.update(roles)
+
     def _decorator(fn):
         @wraps(fn)
         def _wrapped(*args, **kwargs):
@@ -80,10 +114,8 @@ def require_auth(role=None):
                 "org_id": claims.get("org_id"),
                 "role": claims.get("role"),
             }
-            if role:
-                allowed = {role} if isinstance(role, str) else set(role)
-                if request.user["role"] not in allowed:
-                    abort(403, "Forbidden")
+            if allowed and request.user["role"] not in allowed:
+                abort(403, "Forbidden")
 
             g.jwt = claims
             return fn(*args, **kwargs)
@@ -99,16 +131,6 @@ def whoami():
 
 
 
-
-
-def get_jwt_secret():
-    s = os.environ.get("JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
-    if not s:
-        raise RuntimeError("JWT secret missing")
-    return s
-
-JWT_SECRET = get_jwt_secret()
-JWT_ALG = "HS256"
 
 
 CARRIER_INFO = {

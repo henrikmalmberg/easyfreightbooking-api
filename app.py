@@ -77,27 +77,60 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
 
 
-@app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_v2")
+# Ta bort/kommentera bort tidigare:
+# @app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_v2")
+# def cmr_pdf_v2(...):
+# ...
+# @app.get("/bookings/<int:booking_id>/cmr.pdf")
+# def get_cmr_pdf(...):
+# ...
+
+# En enda, flexibel endpoint:
+@app.get("/bookings/<bid>/cmr.pdf", endpoint="cmr_pdf")
 @jwt_required()
-def cmr_pdf_v2(booking_id):
-    b = db.session.get(Booking, booking_id)
-    if not b:
-        return jsonify({"error": "Not found"}), 404
+def cmr_pdf(bid):
+    db = SessionLocal()
     try:
+        b = None
+        # 1) numeriskt id?
+        if bid.isdigit():
+            b = db.get(Booking, int(bid))
+        # 2) bokningsnummer (XX-LLL-#####)?
+        elif BOOKING_REGEX.fullmatch(bid.upper()):
+            b = (db.query(Booking)
+                   .filter(Booking.booking_number == bid.upper())
+                   .first())
+        # 3) UUID (om du i framtiden skulle ha UUID som id)
+        else:
+            try:
+                uuid.UUID(bid)
+                b = (db.query(Booking)
+                       .filter(Booking.id == bid)  # funkar bara om kolumnen är str/UUID
+                       .first())
+            except Exception:
+                pass
+
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+
         pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+
+        return Response(
+            pdf,
+            status=200,
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition":
+                    f'attachment; filename="CMR_{b.booking_number or b.id}.pdf"',
+                "Cache-Control": "no-store",
+            },
+        )
     except Exception:
         app.logger.exception("CMR PDF generation failed")
         return jsonify({"error": "PDF generation failed"}), 500
+    finally:
+        db.close()
 
-    return Response(
-        pdf,
-        status=200,
-        headers={
-            "Content-Type": "application/pdf",
-            "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
-            "Cache-Control": "no-store",
-        },
-    )
 
 
 
@@ -231,37 +264,6 @@ CARRIER_INFO = {
     "phone": "+46 (0)40-123 456",
     "email": "operations@easyfreightbooking.com",
 }
-
-@app.get("/bookings/<int:booking_id>/cmr.pdf")
-@jwt_required()
-def get_cmr_pdf(booking_id):
-    # 1) Plocka bokningen och gör behörighetskontroll mot org/user
-    b = db.session.get(Booking, booking_id)
-    if not b:
-        return jsonify({"error":"Not found"}), 404
-
-    # (valfritt) kontrollera att nuvarande användare har rätt till denna booking
-    # current_user_id = get_jwt_identity()
-    # ...
-
-    # 2) Generera PDF
-    try:
-        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
-    except Exception as e:
-        app.logger.exception("CMR PDF generation failed")
-        return jsonify({"error":"PDF generation failed"}), 500
-
-    # 3) Skicka som PDF
-    headers = {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
-        "Cache-Control": "no-store"
-    }
-    return Response(pdf, status=200, headers=headers)
-
-
-
-
 
 @app.get("/addresses")
 @require_auth()

@@ -131,30 +131,6 @@ def _ensure_pdf_safe(b: Booking):
 
 # --- CMR routes -------------------------------------------------------------
 
-@app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_by_id")
-@jwt_required()
-def cmr_pdf_by_id(booking_id: int):
-    db = SessionLocal()
-    try:
-        b = db.query(Booking).get(booking_id)
-        if not b:
-            return jsonify({"error": "Not found"}), 404
-
-        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
-        return Response(
-            pdf,
-            status=200,
-            headers={
-                "Content-Type": "application/pdf",
-                "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
-                "Cache-Control": "no-store",
-            },
-        )
-    except Exception:
-        app.logger.exception("CMR PDF generation failed (by id)")
-        return jsonify({"error": "PDF generation failed"}), 500
-    finally:
-        db.close()
 
 from traceback import format_exc
 

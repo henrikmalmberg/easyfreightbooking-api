@@ -1,20 +1,28 @@
 # pdf_utils.py
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Table, TableStyle, SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.enums import TA_LEFT
+from reportlab.platypus import (
+    Table, TableStyle, SimpleDocTemplate, Paragraph, Spacer, Image
+)
 from reportlab.lib.utils import ImageReader
-import io, qrcode
+import io
+import json
+
+# QR är valfritt – om modulen saknas hoppar vi över
+try:
+    import qrcode
+except Exception:
+    qrcode = None
+
 
 def _pick(obj, *names, default=""):
-    """Returnera första existerande attribut/nyckel i ordning, annars default."""
+    """Returnera första existerande attribut/nyckel som har icke-tomt värde."""
     if obj is None:
         return default
     for n in names:
-        # stöd både objekt-attribut och dict
         if hasattr(obj, n):
             v = getattr(obj, n)
         elif isinstance(obj, dict) and n in obj:
@@ -27,8 +35,9 @@ def _pick(obj, *names, default=""):
                 return s
     return default
 
+
 def _fmt_addr(addr):
-    """Formatera Address för dina modeller: business_name/address/postal_code/city/country_code."""
+    """Formatera Address enligt dina modeller."""
     if not addr:
         return ""
     lines = [
@@ -41,61 +50,104 @@ def _fmt_addr(addr):
     lines = [l for l in lines if l]
     return "\n".join(lines)
 
+
+def _normalize_goods(goods_raw):
+    """
+    Tar emot goods som lista/dict/sträng och returnerar lista av dicts.
+    """
+    if goods_raw is None:
+        return []
+    if isinstance(goods_raw, str):
+        try:
+            parsed = json.loads(goods_raw)
+        except Exception:
+            return []
+        goods_raw = parsed
+    if isinstance(goods_raw, dict):
+        return [goods_raw]
+    if isinstance(goods_raw, list):
+        return goods_raw
+    return []
+
+
 def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=14*mm, bottomMargin=14*mm, leftMargin=14*mm, rightMargin=14*mm)
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=14*mm, bottomMargin=14*mm,
+        leftMargin=14*mm, rightMargin=14*mm
+    )
     styles = getSampleStyleSheet()
     normal = styles["Normal"]; normal.alignment = TA_LEFT
     elems = []
 
+    # Rubrik
     elems.append(Paragraph("<b>CMR / International Consignment Note</b>", styles["Title"]))
     elems.append(Spacer(1, 6))
 
+    # CMR/Booking nr + QR (om möjligt)
     cmr_number = getattr(booking, "booking_number", None) or getattr(booking, "id", "N/A")
-    qr = qrcode.make(str(cmr_number))
-    qbuf = io.BytesIO(); qr.save(qbuf, format="PNG"); qbuf.seek(0)
-    qr_img = ImageReader(qbuf)
+    qr_flowable = None
+    if qrcode:
+        try:
+            qr_img = qrcode.make(str(cmr_number))
+            qr_buf = io.BytesIO()
+            qr_img.save(qr_buf, format="PNG")
+            qr_buf.seek(0)
+            # Platypus Image (säkert i Table)
+            qr_flowable = Image(qr_buf, 18*mm, 18*mm)
+        except Exception:
+            qr_flowable = None
 
-    # DINA fält: sender_address / receiver_address (fall back till shipper/consignee om de skulle finnas)
+    # Adresser
     shipper_addr   = getattr(booking, "sender_address", None)   or getattr(booking, "shipper_address", None)
     consignee_addr = getattr(booking, "receiver_address", None) or getattr(booking, "consignee_address", None)
-
     shipper  = _fmt_addr(shipper_addr)
     consignee = _fmt_addr(consignee_addr)
 
     carrier_lines = [carrier_info.get("name",""), carrier_info.get("address","")]
-    orgline = " ".join([x for x in [carrier_info.get("orgno",""), carrier_info.get("phone",""), carrier_info.get("email","")] if x])
+    orgline = " ".join([x for x in [
+        carrier_info.get("orgno",""), carrier_info.get("phone",""), carrier_info.get("email","")
+    ] if x])
     if orgline: carrier_lines.append(orgline)
     carrier_text = "\n".join([l for l in carrier_lines if l])
 
-    hdr_data = [[
+    hdr_cells = [
         Paragraph("<b>1. Shipper / Avsändare</b><br/>" + (shipper or "-"), normal),
         Paragraph("<b>2. Consignee / Mottagare</b><br/>" + (consignee or "-"), normal),
         Paragraph("<b>3. Carrier / Transportör</b><br/>" + (carrier_text or "-"), normal),
-        qr_img
-    ]]
-    hdr_tbl = Table(hdr_data, colWidths=[60*mm, 60*mm, 45*mm, 20*mm])
+    ]
+    if qr_flowable is not None:
+        hdr_cells.append(qr_flowable)
+        col_widths = [60*mm, 60*mm, 45*mm, 20*mm]
+    else:
+        col_widths = [70*mm, 70*mm, 45*mm]
+
+    hdr_tbl = Table([hdr_cells], colWidths=col_widths)
     hdr_tbl.setStyle(TableStyle([
         ("BOX", (0,0), (-1,-1), 0.6, colors.black),
-        ("VALIGN", (0,0), (-2,-1), "TOP"),
-        ("ALIGN", (-1,0), (-1,0), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
         ("TOPPADDING",(0,0),(-1,-1),4),
         ("BOTTOMPADDING",(0,0),(-1,-1),4),
     ]))
-    elems.append(hdr_tbl); elems.append(Spacer(1, 6))
+    elems.append(hdr_tbl)
+    elems.append(Spacer(1, 6))
 
-    pickup_place  = _pick(shipper_addr,   "city")
-    delivery_place= _pick(consignee_addr, "city")
-    pickup_date   = _pick(booking, "loading_planned_date", "loading_requested_date", "pickup_date", default="")
-    delivery_date = _pick(booking, "unloading_planned_date", "unloading_requested_date", "delivery_date", default="")
-
-    # konvertera datumobjekt till ISO om de inte redan är strängar
+    # Pickup/Delivery + datum
+    pickup_place   = _pick(shipper_addr, "city")
+    delivery_place = _pick(consignee_addr, "city")
+    pickup_date    = _pick(booking, "loading_planned_date", "loading_requested_date", "pickup_date", default="")
+    delivery_date  = _pick(booking, "unloading_planned_date", "unloading_requested_date", "delivery_date", default="")
     if hasattr(pickup_date, "isoformat"):   pickup_date = pickup_date.isoformat()
     if hasattr(delivery_date, "isoformat"): delivery_date = delivery_date.isoformat()
 
-    # referenser: din Booking har .references (dict) – plocka ut 1 & 2 om de finns
+    # Referenser
     refs = getattr(booking, "references", None) or {}
-    if not isinstance(refs, dict): refs = {}
+    if not isinstance(refs, dict):
+        try:
+            refs = json.loads(refs)
+        except Exception:
+            refs = {}
     ref1 = refs.get("reference1") or refs.get("loadingReference") or ""
     ref2 = refs.get("reference2") or refs.get("unloadingReference") or ""
 
@@ -111,39 +163,49 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("TOPPADDING",(0,0),(-1,-1),4),
         ("BOTTOMPADDING",(0,0),(-1,-1),4)
     ]))
-    elems.append(tbl2); elems.append(Spacer(1, 6))
+    elems.append(tbl2)
+    elems.append(Spacer(1, 6))
 
-    # goods: din Booking har normalt listan b.goods
-    goods_list = getattr(booking, "goods", None) or []
-    if isinstance(goods_list, dict):  # om någon råkat spara dict
-        goods_list = [goods_list]
+    # Goods
+    goods_list = _normalize_goods(getattr(booking, "goods", None))
 
-    # Summera “snyggt” till en sträng
     def _goods_desc(gs):
         parts = []
         for g in gs:
+            if not isinstance(g, dict): 
+                continue
             qty = g.get("quantity") or g.get("qty") or 1
             typ = g.get("type") or g.get("description") or ""
             dims = "x".join(str(g.get(k) or "") for k in ("length","width","height")).strip("x")
             wt   = g.get("weight") or ""
-            seg = f"{qty}× {typ}"
+            seg = f"{qty}× {typ}".strip()
             if dims: seg += f" {dims}cm"
             if wt:   seg += f", {wt} kg"
             parts.append(seg)
         return "\n".join(parts) if parts else "-"
 
     goods_desc   = _goods_desc(goods_list)
-    packages     = sum(int(float(g.get("quantity") or 0)) for g in goods_list) or "-"
-    gross_weight = sum(float(g.get("weight") or 0.0) for g in goods_list) or "-"
-    volume_cbm   = sum(float(g.get("cbm") or 0.0) for g in goods_list) or "-"
+    try:
+        packages     = sum(int(float(g.get("quantity") or 0)) for g in goods_list) or "-"
+    except Exception:
+        packages = "-"
+    try:
+        gross_weight = sum(float(g.get("weight") or 0.0) for g in goods_list) or "-"
+    except Exception:
+        gross_weight = "-"
+    try:
+        volume_cbm   = sum(float(g.get("cbm") or 0.0) for g in goods_list) or "-"
+    except Exception:
+        volume_cbm = "-"
+
     hs_code      = "-"
-    dangerous_str= "Yes" if any(g.get("dg") or g.get("dangerous") for g in goods_list) else "No"
+    dangerous_str= "Yes" if any((isinstance(g, dict) and (g.get("dg") or g.get("dangerous"))) for g in goods_list) else "No"
 
     goods_tbl = Table([
         [Paragraph("<b>7. Description of goods</b>", normal), Paragraph("<b>8. Packages</b>", normal),
          Paragraph("<b>9. Gross weight (kg)</b>", normal), Paragraph("<b>10. Volume (m³)</b>", normal),
          Paragraph("<b>11. HS code</b>", normal), Paragraph("<b>12. DG</b>", normal)],
-        [Paragraph(goods_desc, normal), str(packages), str(int(gross_weight) if gross_weight != "-" else "-"),
+        [Paragraph(goods_desc, normal), str(packages), str(int(gross_weight) if isinstance(gross_weight, (int,float)) else gross_weight),
          str(volume_cbm), str(hs_code), dangerous_str]
     ], colWidths=[65*mm, 20*mm, 30*mm, 25*mm, 25*mm, 15*mm])
     goods_tbl.setStyle(TableStyle([
@@ -154,12 +216,20 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("TOPPADDING",(0,0),(-1,-1),4),
         ("BOTTOMPADDING",(0,0),(-1,-1),4)
     ]))
-    elems.append(goods_tbl); elems.append(Spacer(1, 6))
+    elems.append(goods_tbl)
+    elems.append(Spacer(1, 6))
 
+    # Incoterms / Instructions / Addons
     incoterms     = _pick(booking, "incoterms", default="-")
     instructions  = _pick(booking, "instructions", default="-")
-    addons = getattr(booking, "addons", None) or {}
-    if not isinstance(addons, dict): addons = {}
+    addons = getattr(booking, "addons", None)
+    if isinstance(addons, str):
+        try:
+            addons = json.loads(addons)
+        except Exception:
+            addons = {}
+    if not isinstance(addons, dict):
+        addons = {}
     accessorials = [k.replace("_"," ").title() for k, v in addons.items() if v]
     accessorials_str = ", ".join(accessorials) if accessorials else "-"
 
@@ -177,8 +247,10 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("TOPPADDING",(0,0),(-1,-1),4),
         ("BOTTOMPADDING",(0,0),(-1,-1),4)
     ]))
-    elems.append(info_tbl); elems.append(Spacer(1, 6))
+    elems.append(info_tbl)
+    elems.append(Spacer(1, 6))
 
+    # Signatur + footer
     sign_tbl = Table([
         [Paragraph("<b>16. Shipper signature (date/place)</b>", normal),
          Paragraph("<b>17. Carrier signature (date/place)</b>", normal),
@@ -190,10 +262,11 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("GRID",(0,0),(-1,-1),0.3,colors.grey),
         ("TOPPADDING",(0,1),(-1,1),18),
     ]))
-    elems.append(sign_tbl); elems.append(Spacer(1, 4))
+    elems.append(sign_tbl)
+    elems.append(Spacer(1, 4))
     elems.append(Paragraph(f"CMR/Booking No: <b>{cmr_number}</b>", normal))
 
     doc.build(elems)
-    out = buf.getvalue()
+    pdf_bytes = buf.getvalue()
     buf.close()
-    return out
+    return pdf_bytes

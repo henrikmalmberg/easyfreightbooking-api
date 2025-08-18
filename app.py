@@ -163,6 +163,18 @@ def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
 def ping():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
+@app.get("/bookings/<int:booking_id>/cmr.pdf")
+def get_cmr_pdf(booking_id):
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return jsonify({"error": "Not found"}), 404
+    pdf = generate_cmr_pdf_bytes(booking, CARRIER_INFO)
+    return (pdf, 200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": f'inline; filename="CMR_{booking.booking_number}.pdf"'
+    })
+
+
 @app.get("/addresses")
 @require_auth()
 def addresses_list():

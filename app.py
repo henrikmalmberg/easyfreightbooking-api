@@ -40,15 +40,7 @@ CARRIER_INFO = {
     "email": "operations@easyfreightbooking.com",
 }
 
-@app.before_request
-def accept_jwt_query_param():
-    # Om ingen Authorization-header finns, men ?jwt= finns i URL:en,
-    # injicera den som Authorization-header så @jwt_required() fungerar.
-    if "Authorization" in request.headers:
-        return
-    token = request.args.get("jwt")
-    if token:
-        request.headers.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+
 
 # =========================================================
 # App + CORS
@@ -67,6 +59,16 @@ CORS(app, resources={
         max_age=86400,
     }
 })
+
+@app.before_request
+def accept_jwt_query_param():
+    # Om ingen Authorization-header finns, men ?jwt= finns i URL:en,
+    # injicera den som Authorization-header så @jwt_required() fungerar.
+    if "Authorization" in request.headers:
+        return
+    token = request.args.get("jwt")
+    if token:
+        request.headers.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))

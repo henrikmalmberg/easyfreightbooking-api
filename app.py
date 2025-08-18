@@ -24,8 +24,17 @@ from xml.etree import ElementTree as XET
 from sqlalchemy import or_
 import logging
 from models import OrgAddress
+from flask import Response
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from pdf_utils import generate_cmr_pdf_bytes
 
-
+CARRIER_INFO = {
+    "name": "Easy Freight Booking Logistics AB",
+    "address": "Valenciagatan 2, SE-201 21 Malmö, Sweden",
+    "orgno": "Org.nr 559477-6378",
+    "phone": "+46 (0)40-123 456",
+    "email": "operations@easyfreightbooking.com",
+}
 
 # =========================================================
 # App + CORS
@@ -163,16 +172,48 @@ def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
 def ping():
     return jsonify({"ok": True, "time": datetime.utcnow().isoformat()})
 
+# app.py
+from flask import Response
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from pdf_utils import generate_cmr_pdf_bytes
+
+CARRIER_INFO = {
+    "name": "Easy Freight Booking / Begoma",
+    "address": "Stapelbäddsgatan 3, 211 75 Malmö, Sweden",
+    "orgno": "Org.nr 556123-4567",
+    "phone": "+46 (0)40-123 456",
+    "email": "operations@easyfreightbooking.com",
+}
+
 @app.get("/bookings/<int:booking_id>/cmr.pdf")
+@jwt_required()
 def get_cmr_pdf(booking_id):
-    booking = db.session.get(Booking, booking_id)
-    if not booking:
-        return jsonify({"error": "Not found"}), 404
-    pdf = generate_cmr_pdf_bytes(booking, CARRIER_INFO)
-    return (pdf, 200, {
+    # 1) Plocka bokningen och gör behörighetskontroll mot org/user
+    b = db.session.get(Booking, booking_id)
+    if not b:
+        return jsonify({"error":"Not found"}), 404
+
+    # (valfritt) kontrollera att nuvarande användare har rätt till denna booking
+    # current_user_id = get_jwt_identity()
+    # ...
+
+    # 2) Generera PDF
+    try:
+        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+    except Exception as e:
+        app.logger.exception("CMR PDF generation failed")
+        return jsonify({"error":"PDF generation failed"}), 500
+
+    # 3) Skicka som PDF
+    headers = {
         "Content-Type": "application/pdf",
-        "Content-Disposition": f'inline; filename="CMR_{booking.booking_number}.pdf"'
-    })
+        "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
+        "Cache-Control": "no-store"
+    }
+    return Response(pdf, status=200, headers=headers)
+
+
+
 
 
 @app.get("/addresses")

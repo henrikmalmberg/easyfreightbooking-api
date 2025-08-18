@@ -156,6 +156,55 @@ def cmr_pdf_by_id(booking_id: int):
     finally:
         db.close()
 
+from traceback import format_exc
+
+@app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_by_id")
+@jwt_required()
+def cmr_pdf_by_id(booking_id: int):
+    db = SessionLocal()
+    try:
+        b = db.query(Booking).get(booking_id)
+        if not b:
+            return jsonify({"error": "Not found"}), 404
+
+        # --- DIAG: logga grunddata
+        app.logger.info("CMR by id %s | booking_number=%s", booking_id, getattr(b, "booking_number", None))
+        app.logger.info(" sender_address=%s", getattr(b, "sender_address", None))
+        app.logger.info(" receiver_address=%s", getattr(b, "receiver_address", None))
+        app.logger.info(" goods type=%s", type(getattr(b, "goods", None)).__name__)
+
+        try:
+            pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+        except Exception as e:
+            # Visa fel i klartext om ?debug=1
+            if request.args.get("debug") == "1":
+                return jsonify({
+                    "error": "PDF generation failed",
+                    "exception": str(e),
+                    "trace": format_exc(),
+                    "booking_id": booking_id,
+                    "booking_number": getattr(b, "booking_number", None),
+                    "goods_type": type(getattr(b, "goods", None)).__name__,
+                    "has_sender": bool(getattr(b, "sender_address", None)),
+                    "has_receiver": bool(getattr(b, "receiver_address", None)),
+                }), 500
+            app.logger.exception("CMR PDF generation failed (by id)")
+            return jsonify({"error": "PDF generation failed"}), 500
+
+        return Response(
+            pdf,
+            status=200,
+            headers={
+                "Content-Type": "application/pdf",
+                "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
+                "Cache-Control": "no-store",
+            },
+        )
+    finally:
+        db.close()
+
+
+
 @app.get("/bookings/<booking_number>/cmr.pdf", endpoint="cmr_pdf_by_number")
 @jwt_required()
 def cmr_pdf_by_number(booking_number: str):

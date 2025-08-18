@@ -428,17 +428,6 @@ def parse_hh_mm(s: str | None):
     except Exception:
         return None
 
-def extract_token_from_request():
-    # 1) Authorization: Bearer <token>
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return auth.split(" ", 1)[1]
-
-    # 2) Fallback för nya-flik-länkar: ?jwt= eller ?token=
-    q = request.args.get("jwt") or request.args.get("token")
-    return q
-
-
 def upsert_org_address(db, org_id: int, src: dict, addr_type: str):
     key = addr_key({
         "business_name": src.get("business_name"),

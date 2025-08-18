@@ -638,13 +638,22 @@ def admin_booking_reassign(booking_id):
     finally:
         db.close()
 
-
+@app.post("/login")
+def login():
+    # ... validera email/lösen ...
+    payload = {
+        "user_id": user.id,
+        "org_id": user.organization_id,
+        "role": user.role,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    return jsonify(token=token)
 
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(force=True)
-    # direkt efter: data = request.get_json(force=True)
-    # --- sanitize: never trust client-sent user_id ---
+
     data.pop("user_id", None)
     if isinstance(data.get("booker"), dict):
         data["booker"].pop("user_id", None)

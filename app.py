@@ -27,38 +27,13 @@ from models import OrgAddress
 from flask import Response
 from pdf_utils import generate_cmr_pdf_bytes
 from pdf_utils import generate_cmr_pdf_bytes
-
-# app.py (överst)
-import os, jwt
-from flask import Flask, request, abort, g, jsonify
-from functools import wraps
-from datetime import datetime, timedelta, timezone
-
 app = Flask(__name__)
-# ==== AUTH CORE (måste ligga före alla @require_auth) ====
+
+# ==== AUTH CORE ====
 from flask import abort, g, request, jsonify
-
-def get_jwt_secret():
-    # accepterar JWT_SECRET eller JWT_SECRET_KEY eller SECRET_KEY (fallback)
-    s = (os.environ.get("JWT_SECRET")
-         or os.environ.get("JWT_SECRET_KEY")
-         or os.environ.get("SECRET_KEY"))
-    if not s:
-        raise RuntimeError("JWT secret missing")
-    return s
-
-JWT_SECRET = get_jwt_secret()
-JWT_ALG = "HS256"
-JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
-
-def extract_token_from_request():
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return auth.split(" ", 1)[1]
-    return request.args.get("jwt") or request.args.get("token")
-
-# ==== AUTH CORE (placera högt upp i filen, före alla @require_auth) ====
-from flask import abort, g, request, jsonify
+from functools import wraps
+import jwt, os
+from datetime import datetime, timedelta
 
 def get_jwt_secret():
     s = (os.environ.get("JWT_SECRET")
@@ -76,23 +51,19 @@ def extract_token_from_request():
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth.split(" ", 1)[1]
-    # funkar för länkar med ?jwt= eller ?token=
     return request.args.get("jwt") or request.args.get("token")
 
 def require_auth(role=None, *roles):
     """
-    Exempel:
-      @require_auth()                       # alla inloggade
-      @require_auth("admin")                # en roll
-      @require_auth("admin", "superadmin")  # flera roller
-      @require_auth(role="superadmin")      # keyword
+    Användning:
+      @require_auth()
+      @require_auth("admin")
+      @require_auth("admin", "superadmin")
+      @require_auth(role="superadmin")
     """
     allowed = set()
     if role is not None:
-        if isinstance(role, (list, tuple, set)):
-            allowed.update(role)
-        else:
-            allowed.add(role)
+        allowed.update(role if isinstance(role, (list, tuple, set)) else [role])
     if roles:
         allowed.update(roles)
 
@@ -114,10 +85,9 @@ def require_auth(role=None, *roles):
                 "org_id": claims.get("org_id"),
                 "role": claims.get("role"),
             }
+            g.jwt = claims
             if allowed and request.user["role"] not in allowed:
                 abort(403, "Forbidden")
-
-            g.jwt = claims
             return fn(*args, **kwargs)
         return _wrapped
     return _decorator

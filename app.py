@@ -77,17 +77,17 @@ SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
 
 
-@app.get("/bookings/<int:booking_id>/cmr.pdf")
+@app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_v2")
 @jwt_required()
-def get_cmr_pdf(booking_id):
+def cmr_pdf_v2(booking_id):
     b = db.session.get(Booking, booking_id)
     if not b:
-        return jsonify({"error":"Not found"}), 404
+        return jsonify({"error": "Not found"}), 404
     try:
         pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
     except Exception:
         app.logger.exception("CMR PDF generation failed")
-        return jsonify({"error":"PDF generation failed"}), 500
+        return jsonify({"error": "PDF generation failed"}), 500
 
     return Response(
         pdf,
@@ -98,6 +98,7 @@ def get_cmr_pdf(booking_id):
             "Cache-Control": "no-store",
         },
     )
+
 
 
 

@@ -45,20 +45,23 @@ CARRIER_INFO = {
 # =========================================================
 # App + CORS
 # =========================================================
+from flask_cors import CORS
+
 app = Flask(__name__)
+
 CORS(app, resources={
     r"/*": {
         "origins": [
-            "https://easyfreightbooking.com",
             "https://easyfreightbooking-dashboard.onrender.com",
-            "https://app.easyfreightbooking.com",
+            "https://easyfreightbooking.com",
         ],
-        "allow_headers": ["Content-Type", "Authorization"],
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        expose_headers=["Content-Disposition"],   # så filnamn i svarsyns
-        max_age=86400,
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Disposition"],  # <-- korrekt plats
+        "max_age": 86400,
     }
 })
+
 
 @app.before_request
 def accept_jwt_query_param():

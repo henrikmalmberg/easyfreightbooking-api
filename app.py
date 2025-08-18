@@ -135,7 +135,7 @@ def _ensure_pdf_safe(b: Booking):
 from traceback import format_exc
 
 @app.get("/bookings/<int:booking_id>/cmr.pdf", endpoint="cmr_pdf_by_id")
-@jwt_required()
+@require_auth()
 def cmr_pdf_by_id(booking_id: int):
     db = SessionLocal()
     try:
@@ -182,7 +182,7 @@ def cmr_pdf_by_id(booking_id: int):
 
 
 @app.get("/bookings/<booking_number>/cmr.pdf", endpoint="cmr_pdf_by_number")
-@jwt_required()
+@require_auth()
 def cmr_pdf_by_number(booking_number: str):
     db = SessionLocal()
     try:
@@ -208,7 +208,7 @@ def cmr_pdf_by_number(booking_number: str):
 
 
 @app.get("/bookings/<bid>/cmr.pdf", endpoint="cmr_pdf")
-@jwt_required()
+@require_auth()
 def cmr_pdf(bid):
     db = SessionLocal()
     try:
@@ -246,7 +246,7 @@ def cmr_pdf(bid):
 import traceback
 
 @app.get("/bookings/<booking_id>/cmr.test")
-@jwt_required()
+@require_auth()
 def cmr_test(booking_id):
     db = SessionLocal()
     try:
@@ -438,16 +438,7 @@ def ping():
 
 # app.py
 from flask import Response
-from flask_jwt_extended import jwt_required, get_jwt_identity
 from pdf_utils import generate_cmr_pdf_bytes
-
-CARRIER_INFO = {
-    "name": "Easy Freight Booking / Begoma",
-    "address": "Stapelbäddsgatan 3, 211 75 Malmö, Sweden",
-    "orgno": "Org.nr 556123-4567",
-    "phone": "+46 (0)40-123 456",
-    "email": "operations@easyfreightbooking.com",
-}
 
 @app.get("/addresses")
 @require_auth()

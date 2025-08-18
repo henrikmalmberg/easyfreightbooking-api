@@ -25,9 +25,7 @@ from sqlalchemy import or_
 import logging
 from models import OrgAddress
 from flask import Response
-from flask_jwt_extended import jwt_required, get_jwt_identity
 from pdf_utils import generate_cmr_pdf_bytes
-from flask_jwt_extended import jwt_required
 from pdf_utils import generate_cmr_pdf_bytes
 
 # app.py (överst)
@@ -37,6 +35,71 @@ from functools import wraps
 from datetime import datetime, timedelta, timezone
 
 app = Flask(__name__)
+# ==== AUTH CORE (måste ligga före alla @require_auth) ====
+from flask import abort, g, request, jsonify
+
+def get_jwt_secret():
+    # accepterar JWT_SECRET eller JWT_SECRET_KEY eller SECRET_KEY (fallback)
+    s = (os.environ.get("JWT_SECRET")
+         or os.environ.get("JWT_SECRET_KEY")
+         or os.environ.get("SECRET_KEY"))
+    if not s:
+        raise RuntimeError("JWT secret missing")
+    return s
+
+JWT_SECRET = get_jwt_secret()
+JWT_ALG = "HS256"
+JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
+def extract_token_from_request():
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1]
+    return request.args.get("jwt") or request.args.get("token")
+
+def require_auth(role=None):
+    """
+    role: None, 'admin'/'superadmin' eller lista av roller.
+    Sätter request.user = { user_id, org_id, role }.
+    """
+    def _decorator(fn):
+        @wraps(fn)
+        def _wrapped(*args, **kwargs):
+            token = extract_token_from_request()
+            if not token:
+                abort(401, "Missing token")
+            try:
+                claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+            except jwt.ExpiredSignatureError:
+                abort(401, "Token expired")
+            except jwt.InvalidTokenError:
+                abort(401, "Invalid token")
+
+            request.user = {
+                "user_id": claims.get("user_id"),
+                "org_id": claims.get("org_id"),
+                "role": claims.get("role"),
+            }
+            if role:
+                allowed = {role} if isinstance(role, str) else set(role)
+                if request.user["role"] not in allowed:
+                    abort(403, "Forbidden")
+
+            g.jwt = claims
+            return fn(*args, **kwargs)
+        return _wrapped
+    return _decorator
+
+@app.get("/debug/whoami")
+@require_auth()
+def whoami():
+    return jsonify(request.user)
+
+
+
+
+
+
 
 def get_jwt_secret():
     s = os.environ.get("JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
@@ -64,8 +127,6 @@ CARRIER_INFO = {
 # App + CORS
 # =========================================================
 from flask_cors import CORS
-
-app = Flask(__name__)
 
 CORS(app, resources={
     r"/*": {
@@ -640,43 +701,24 @@ def admin_booking_reassign(booking_id):
 
 @app.post("/login")
 def login():
-    # ... validera email/lösen ...
-    payload = {
-        "user_id": user.id,
-        "org_id": user.organization_id,
-        "role": user.role,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=12),
-    }
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
-    return jsonify(token=token)
-
-@app.route("/login", methods=["POST"])
-def login():
     data = request.get_json(force=True)
-
-    data.pop("user_id", None)
-    if isinstance(data.get("booker"), dict):
-        data["booker"].pop("user_id", None)
-
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.email == data["email"]).first()
         if not user or not check_password_hash(user.password_hash, data["password"]):
             return jsonify({"error": "Invalid credentials"}), 401
 
-        token = jwt.encode(
-            {
-                "user_id": user.id,
-                "org_id": user.org_id,
-                "role": user.role,
-                "exp": datetime.utcnow() + timedelta(hours=JWT_HOURS),
-            },
-            SECRET_KEY,
-            algorithm="HS256",
-        )
+        claims = {
+            "user_id": user.id,
+            "org_id": user.org_id,
+            "role": user.role,
+            "exp": datetime.utcnow() + timedelta(hours=JWT_HOURS),
+        }
+        token = jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALG)
         return jsonify({"token": token})
     finally:
         db.close()
+
 
 def is_vat_format(v: str) -> bool:
     """ Grov formatkoll: CC + 2–12 tecken. Detaljkontroller görs ev. mot VIES. """

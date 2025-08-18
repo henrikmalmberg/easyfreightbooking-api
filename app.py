@@ -27,6 +27,10 @@ from models import OrgAddress
 from flask import Response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from pdf_utils import generate_cmr_pdf_bytes
+from flask import request
+from flask import Response, jsonify
+from flask_jwt_extended import jwt_required
+from pdf_utils import generate_cmr_pdf_bytes
 
 CARRIER_INFO = {
     "name": "Easy Freight Booking Logistics AB",
@@ -35,6 +39,16 @@ CARRIER_INFO = {
     "phone": "+46 (0)40-123 456",
     "email": "operations@easyfreightbooking.com",
 }
+
+@app.before_request
+def accept_jwt_query_param():
+    # Om ingen Authorization-header finns, men ?jwt= finns i URL:en,
+    # injicera den som Authorization-header så @jwt_required() fungerar.
+    if "Authorization" in request.headers:
+        return
+    token = request.args.get("jwt")
+    if token:
+        request.headers.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
 
 # =========================================================
 # App + CORS
@@ -48,12 +62,39 @@ CORS(app, resources={
             "https://app.easyfreightbooking.com",
         ],
         "allow_headers": ["Content-Type", "Authorization"],
-        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        expose_headers=["Content-Disposition"],   # så filnamn i svarsyns
+        max_age=86400,
     }
 })
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-prod")
 JWT_HOURS = int(os.getenv("JWT_HOURS", "8"))
+
+
+@app.get("/bookings/<int:booking_id>/cmr.pdf")
+@jwt_required()
+def get_cmr_pdf(booking_id):
+    b = db.session.get(Booking, booking_id)
+    if not b:
+        return jsonify({"error":"Not found"}), 404
+    try:
+        pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+    except Exception:
+        app.logger.exception("CMR PDF generation failed")
+        return jsonify({"error":"PDF generation failed"}), 500
+
+    return Response(
+        pdf,
+        status=200,
+        headers={
+            "Content-Type": "application/pdf",
+            "Content-Disposition": f'attachment; filename="CMR_{b.booking_number or booking_id}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 
 # =========================================================
 # Helpers

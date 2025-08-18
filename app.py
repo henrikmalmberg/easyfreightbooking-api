@@ -166,40 +166,76 @@ def cmr_pdf(bid):
         db.close()
 
 # Hjälprutt för felsökning: visar vad som skulle skickas till PDF:n
-@app.get("/bookings/<bid>/cmr.test")
+# --- DIAG: CMR test ----------------------------------------------------------
+import traceback
+
+@app.get("/bookings/<booking_id>/cmr.test")
 @jwt_required()
-def cmr_test(bid):
+def cmr_test(booking_id):
     db = SessionLocal()
     try:
-        b = _booking_lookup(db, bid)
+        # Hämta booking via int id eller booking_number
+        b = None
+        try:
+            bid = int(str(booking_id))
+            b = db.query(Booking).get(bid)
+        except Exception:
+            b = db.query(Booking).filter(Booking.booking_number == str(booking_id)).first()
+
         if not b:
             return jsonify({"error": "Not found"}), 404
-        try:
-            _ensure_pdf_safe(b)
-        except Exception as e:
-            return jsonify({"ok": False, "precheck_error": str(e)}), 409
 
-        return jsonify({
-            "ok": True,
-            "booking_number": b.booking_number,
-            "sender": {
-                "name": b.sender_address.business_name,
-                "addr": b.sender_address.address,
-                "postal": b.sender_address.postal_code,
-                "city": b.sender_address.city,
-                "cc": b.sender_address.country_code,
+        def addr_dump(a):
+            if not a:
+                return None
+            def g(obj, *names):
+                for n in names:
+                    if hasattr(obj, n):
+                        v = getattr(obj, n)
+                        return None if v is None else v
+                return None
+            return {
+                "class": a.__class__.__name__,
+                "business_name": g(a, "business_name", "company", "name"),
+                "address":       g(a, "address", "address_line1"),
+                "postal_code":   g(a, "postal_code", "postal"),
+                "city":          g(a, "city"),
+                "country":       g(a, "country_code", "country"),
+            }
+
+        sender   = getattr(b, "sender_address",   None) or getattr(b, "shipper_address",   None)
+        receiver = getattr(b, "receiver_address", None) or getattr(b, "consignee_address", None)
+
+        out = {
+            "booking_id": b.id,
+            "booking_number": getattr(b, "booking_number", None),
+            "sender_address_present": bool(sender),
+            "receiver_address_present": bool(receiver),
+            "sender_address": addr_dump(sender),
+            "receiver_address": addr_dump(receiver),
+            "dates": {
+                "loading_requested_date":  str(getattr(b, "loading_requested_date",  None)),
+                "loading_planned_date":    str(getattr(b, "loading_planned_date",    None)),
+                "unloading_requested_date":str(getattr(b, "unloading_requested_date",None)),
+                "unloading_planned_date":  str(getattr(b, "unloading_planned_date",  None)),
             },
-            "receiver": {
-                "name": b.receiver_address.business_name,
-                "addr": b.receiver_address.address,
-                "postal": b.receiver_address.postal_code,
-                "city": b.receiver_address.city,
-                "cc": b.receiver_address.country_code,
-            },
-            "goods": b.goods,
-        })
+            "goods_sample": (getattr(b, "goods", None) or [])[:3],
+        }
+
+        # Testa själva PDF-genereringen men returnera inte PDF:en
+        try:
+            pdf = generate_cmr_pdf_bytes(b, CARRIER_INFO)
+            out["pdf_ok"] = True
+            out["pdf_bytes"] = len(pdf)
+        except Exception as e:
+            out["pdf_ok"] = False
+            out["pdf_error"] = str(e)
+            out["traceback"] = traceback.format_exc()
+
+        return jsonify(out)
     finally:
         db.close()
+# ---------------------------------------------------------------------------
 
 
 

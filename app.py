@@ -41,40 +41,32 @@ CARRIER_INFO = {
 }
 
 # --- add near the top of app.py ---
+import os, jwt
+from flask import Flask, request, g, abort
 from functools import wraps
-from flask import request, jsonify, g
-import jwt
-import os
 
-JWT_SECRET = os.environ.get("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxMywib3JnX2lkIjoxMiwicm9sZSI6InN1cGVyYWRtaW4iLCJleHAiOjE3NTU1Nzc2MDB9.zOVc5I5Ntnm8cwUWTt4bFzSK8IrRhmg2T3RJfOPBpac", "change-me")  # must match what you sign with
+app = Flask(__name__)
+JWT_SECRET = os.environ.get("JWT_SECRET") or os.environ["JWT_SECRET_KEY"]
 
-def require_auth():
-    """Validate a Bearer JWT (or ?jwt=) signed with PyJWT HS256 and set g.user/org."""
-    def decorator(fn):
+def require_auth(scopes=None):
+    def _decorator(fn):
         @wraps(fn)
-        def wrapper(*args, **kwargs):
-            # 1) Try Authorization: Bearer <token>
+        def _wrapped(*args, **kwargs):
             auth = request.headers.get("Authorization", "")
-            token = auth.split(" ", 1)[1] if auth.startswith("Bearer ") else None
-            # 2) Fallback: ?jwt=<token>
-            token = token or request.args.get("jwt")
-
-            if not token:
-                return jsonify({"error": "Missing token"}), 401
-
+            if not auth.startswith("Bearer "):
+                abort(401, "Missing Bearer token")
+            token = auth.split(" ", 1)[1]
             try:
-                payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            except jwt.InvalidTokenError as e:
-                return jsonify({"error": f"Invalid token: {e}"}), 401
-
-            # expose commonly used claims to downstream handlers
-            g.user_id = payload.get("user_id") or payload.get("id")
-            g.organization_id = payload.get("organization_id") or payload.get("org_id")
-            g.role = payload.get("role")
+                claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            except jwt.ExpiredSignatureError:
+                abort(401, "Token expired")
+            except jwt.InvalidTokenError:
+                abort(401, "Invalid token")
+            g.jwt = claims
             return fn(*args, **kwargs)
-        return wrapper
-    return decorator
-# --- end add ---
+        return _wrapped
+    return _decorator
+
 
 
 # =========================================================

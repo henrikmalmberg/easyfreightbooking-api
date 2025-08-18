@@ -1,4 +1,4 @@
-# pdf_utils.py
+# pdf_utils.py  (robust mot dina modelnamn)
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
@@ -8,32 +8,101 @@ from reportlab.platypus import Table, TableStyle, SimpleDocTemplate, Paragraph, 
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.utils import ImageReader
 import io, qrcode
+from datetime import date
+
+def _get(obj, names, default=""):
+    """försök flera attributnamn i ordning"""
+    for n in names:
+        if hasattr(obj, n):
+            v = getattr(obj, n)
+            return "" if v is None else v
+    return default
+
+def _get_addr(booking, which):
+    # which = "shipper" eller "consignee"
+    cand = []
+    if which == "shipper":
+        cand = ["shipper_address", "sender_address", "pickup_address"]
+    else:
+        cand = ["consignee_address", "receiver_address", "delivery_address"]
+    for name in cand:
+        a = getattr(booking, name, None)
+        if a is not None:
+            return a
+    return None
 
 def _fmt_addr(addr):
     if not addr:
         return ""
     lines = [
-        (addr.company or addr.name or "").strip(),
-        (addr.address_line1 or "").strip(),
-        (addr.address_line2 or "").strip(),
-        f"{(addr.postal_code or '').strip()} {(addr.city or '').strip()}".strip(),
-        (addr.country or "").strip(),
+        _get(addr, ["company", "business_name", "name"]),
+        _get(addr, ["address_line1", "address"]),
+        _get(addr, ["address_line2"]),
+        f"{_get(addr, ['postal_code','postal'])} {_get(addr, ['city'])}".strip(),
+        _get(addr, ["country","country_code"]),
     ]
-    lines = [l for l in lines if l]
+    lines = [str(l).strip() for l in lines if str(l).strip()]
     return "\n".join(lines)
+
+def _first_truthy(*vals):
+    for v in vals:
+        if v:
+            return v
+    return None
+
+def _date_to_str(d):
+    try:
+        return d.isoformat()
+    except Exception:
+        return str(d or "") or "-"
+
+def _summarize_goods(goods):
+    """Return (desc, packages, gross_kg, volume_cbm)"""
+    if not goods:
+        return "-", "-", "-", "-"
+    try:
+        pkgs = 0
+        kg = 0.0
+        desc_parts = []
+        for g in goods:
+            if not isinstance(g, dict):
+                continue
+            q = int(float(g.get("quantity") or 0))
+            w = float(g.get("weight") or 0.0)
+            t = str(g.get("type") or "")
+            L = str(g.get("length") or "")
+            W = str(g.get("width") or "")
+            H = str(g.get("height") or "")
+            ldm = g.get("ldm")
+            mark = g.get("marks")
+            pkgs += q
+            kg += w
+            bits = []
+            if q: bits.append(f"{q}x")
+            if t: bits.append(t)
+            dims = "x".join([x for x in [L,W,H] if x])
+            if dims: bits.append(dims + "cm")
+            if ldm: bits.append(f"{ldm} LDM")
+            if mark: bits.append(str(mark))
+            if bits:
+                desc_parts.append(" ".join(bits))
+        desc = "; ".join(desc_parts) or "-"
+        return desc, pkgs or "-", int(round(kg)) or "-", "-"
+    except Exception:
+        return "-", "-", "-", "-"
 
 def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
     """
-    booking: din SQLAlchemy Booking med .shipper_address, .consignee_address etc.
-    carrier_info: {"name": "...", "address": "...", "orgno": "...", "phone": "...", "email": "..."}
-    Returnerar PDF som bytes.
+    Robust CMR-pdf mot olika modelnamn.
     """
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=14*mm, bottomMargin=14*mm, leftMargin=14*mm, rightMargin=14*mm)
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=14*mm, bottomMargin=14*mm, leftMargin=14*mm, rightMargin=14*mm
+    )
 
     styles = getSampleStyleSheet()
-    normal = styles["Normal"]
-    normal.alignment = TA_LEFT
+    normal = styles["Normal"]; normal.alignment = TA_LEFT
 
     elems = []
 
@@ -41,36 +110,30 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
     elems.append(Paragraph("<b>CMR / International Consignment Note</b>", styles["Title"]))
     elems.append(Spacer(1, 6))
 
-    # QR-kod på bokningsnummer
-    cmr_number = getattr(booking, "booking_number", None) or getattr(booking, "id", "N/A")
+    # QR på bokningsnummer
+    cmr_number = _get(booking, ["booking_number", "id"], "N/A")
     qr = qrcode.make(str(cmr_number))
-    qr_buf = io.BytesIO()
-    qr.save(qr_buf, format="PNG")
-    qr_buf.seek(0)
+    qr_buf = io.BytesIO(); qr.save(qr_buf, format="PNG"); qr_buf.seek(0)
     qr_img = ImageReader(qr_buf)
 
-    # Topp: Shipper, Consignee, Carrier + QR
-    shipper = _fmt_addr(getattr(booking, "shipper_address", None))
-    consignee = _fmt_addr(getattr(booking, "consignee_address", None))
+    # Adresser
+    shipper_addr   = _get_addr(booking, "shipper")
+    consignee_addr = _get_addr(booking, "consignee")
+    shipper  = _fmt_addr(shipper_addr)
+    consignee = _fmt_addr(consignee_addr)
 
-    carrier_lines = [
-        carrier_info.get("name",""),
-        carrier_info.get("address",""),
-    ]
+    # Carrier
+    carrier_lines = [carrier_info.get("name",""), carrier_info.get("address","")]
     orgline = " ".join([x for x in [carrier_info.get("orgno",""), carrier_info.get("phone",""), carrier_info.get("email","")] if x])
-    if orgline:
-        carrier_lines.append(orgline)
+    if orgline: carrier_lines.append(orgline)
     carrier_text = "\n".join([l for l in carrier_lines if l])
 
-    hdr_data = [
-        [
-            Paragraph("<b>1. Shipper / Avsändare</b><br/>" + (shipper or "-"), normal),
-            Paragraph("<b>2. Consignee / Mottagare</b><br/>" + (consignee or "-"), normal),
-            Paragraph("<b>3. Carrier / Transportör</b><br/>" + (carrier_text or "-"), normal),
-            qr_img
-        ]
-    ]
-    hdr_tbl = Table(hdr_data, colWidths=[60*mm, 60*mm, 45*mm, 20*mm])
+    hdr_tbl = Table([[
+        Paragraph("<b>1. Shipper / Avsändare</b><br/>" + (shipper or "-"), normal),
+        Paragraph("<b>2. Consignee / Mottagare</b><br/>" + (consignee or "-"), normal),
+        Paragraph("<b>3. Carrier / Transportör</b><br/>" + (carrier_text or "-"), normal),
+        qr_img
+    ]], colWidths=[60*mm, 60*mm, 45*mm, 20*mm])
     hdr_tbl.setStyle(TableStyle([
         ("BOX", (0,0), (-1,-1), 0.6, colors.black),
         ("VALIGN", (0,0), (-2,-1), "TOP"),
@@ -78,43 +141,60 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("TOPPADDING",(0,0),(-1,-1),4),
         ("BOTTOMPADDING",(0,0),(-1,-1),4),
     ]))
-    elems.append(hdr_tbl)
-    elems.append(Spacer(1, 6))
+    elems.append(hdr_tbl); elems.append(Spacer(1, 6))
 
     # Pickup/Delivery + referenser
-    pickup_place = getattr(booking, "pickup_city", None) or getattr(getattr(booking, "shipper_address", None), "city", "")
-    delivery_place = getattr(booking, "delivery_city", None) or getattr(getattr(booking, "consignee_address", None), "city", "")
-    pickup_date = getattr(booking, "pickup_date", None) or getattr(booking, "earliest_pickup_date", None)
-    delivery_date = getattr(booking, "delivery_date", None)
+    pickup_place   = _first_truthy(_get(booking, ["pickup_city"]), _get(shipper_addr or object(), ["city"]))
+    delivery_place = _first_truthy(_get(booking, ["delivery_city"]), _get(consignee_addr or object(), ["city"]))
+    pickup_date = _first_truthy(
+        _get(booking, ["pickup_date"]),
+        _get(booking, ["loading_planned_date", "loading_requested_date"]),
+    )
+    delivery_date = _first_truthy(
+        _get(booking, ["delivery_date"]),
+        _get(booking, ["unloading_planned_date", "unloading_requested_date"]),
+    )
 
-    ref1 = getattr(booking, "customer_reference", "") or ""
-    ref2 = getattr(booking, "additional_reference", "") or ""
+    # referenser: antingen separata fält eller dict .references
+    refs = getattr(booking, "references", None) or {}
+    ref1 = _first_truthy(_get(booking, ["customer_reference"]), refs.get("reference1"))
+    ref2 = _first_truthy(_get(booking, ["additional_reference"]), refs.get("reference2"))
 
-    row2 = [
-        [
-            Paragraph(f"<b>4. Place & date of taking over</b><br/>{pickup_place or '-'}<br/>{pickup_date or '-'}", normal),
-            Paragraph(f"<b>5. Place designated for delivery</b><br/>{delivery_place or '-'}<br/>{delivery_date or '-'}", normal),
-            Paragraph(f"<b>6. References</b><br/>Ref1: {ref1 or '-'}<br/>Ref2: {ref2 or '-'}", normal),
-        ]
-    ]
-    tbl2 = Table(row2, colWidths=[70*mm, 70*mm, 45*mm])
-    tbl2.setStyle(TableStyle([("BOX",(0,0),(-1,-1),0.6,colors.black), ("VALIGN",(0,0),(-1,-1),"TOP"), ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4)]))
-    elems.append(tbl2)
-    elems.append(Spacer(1, 6))
+    tbl2 = Table([[
+        Paragraph(f"<b>4. Place & date of taking over</b><br/>{pickup_place or '-'}<br/>{_date_to_str(pickup_date) or '-'}", normal),
+        Paragraph(f"<b>5. Place designated for delivery</b><br/>{delivery_place or '-'}<br/>{_date_to_str(delivery_date) or '-'}", normal),
+        Paragraph(f"<b>6. References</b><br/>Ref1: {ref1 or '-'}<br/>Ref2: {ref2 or '-'}", normal),
+    ]], colWidths=[70*mm, 70*mm, 45*mm])
+    tbl2.setStyle(TableStyle([
+        ("BOX",(0,0),(-1,-1),0.6,colors.black),
+        ("VALIGN",(0,0),(-1,-1),"TOP"),
+        ("TOPPADDING",(0,0),(-1,-1),4),
+        ("BOTTOMPADDING",(0,0),(-1,-1),4),
+    ]))
+    elems.append(tbl2); elems.append(Spacer(1, 6))
 
-    # Goods block
-    goods_desc = getattr(booking, "goods_description", "") or "-"
-    packages = getattr(booking, "packages", None) or getattr(booking, "pallets", None) or "-"
-    gross_weight = getattr(booking, "gross_weight_kg", None) or getattr(booking, "weight_kg", None) or "-"
-    volume_cbm = getattr(booking, "volume_cbm", None) or "-"
-    hs_code = getattr(booking, "hs_code", None) or "-"
+    # Goods
+    goods_desc = _get(booking, ["goods_description"], None)
+    packages   = _get(booking, ["packages", "pallets"], None)
+    gross_kg   = _get(booking, ["gross_weight_kg", "weight_kg"], None)
+    volume_cbm = _get(booking, ["volume_cbm"], None)
+
+    if goods_desc is None or packages is None or gross_kg is None:
+        # härled från booking.goods (din struktur)
+        goods_desc, packages, gross_kg, volume_cbm_calc = _summarize_goods(getattr(booking, "goods", None))
+        if volume_cbm in (None, "", "-"):
+            volume_cbm = volume_cbm_calc
+
+    hs_code   = _get(booking, ["hs_code"], "-") or "-"
     dangerous = getattr(booking, "dangerous_goods", None)
     dangerous_str = "Yes" if dangerous else "No"
 
     goods_tbl = Table([
         [Paragraph("<b>7. Description of goods</b>", normal), Paragraph("<b>8. Packages</b>", normal),
-         Paragraph("<b>9. Gross weight (kg)</b>", normal), Paragraph("<b>10. Volume (m³)</b>", normal), Paragraph("<b>11. HS code</b>", normal), Paragraph("<b>12. DG</b>", normal)],
-        [Paragraph(goods_desc, normal), str(packages), str(gross_weight), str(volume_cbm), str(hs_code), dangerous_str]
+         Paragraph("<b>9. Gross weight (kg)</b>", normal), Paragraph("<b>10. Volume (m³)</b>", normal),
+         Paragraph("<b>11. HS code</b>", normal), Paragraph("<b>12. DG</b>", normal)],
+        [Paragraph(str(goods_desc or "-"), normal), str(packages or "-"),
+         str(gross_kg or "-"), str(volume_cbm or "-"), str(hs_code or "-"), dangerous_str]
     ], colWidths=[65*mm, 20*mm, 30*mm, 25*mm, 25*mm, 15*mm])
     goods_tbl.setStyle(TableStyle([
         ("BOX",(0,0),(-1,-1),0.6,colors.black),
@@ -123,20 +203,21 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#f3f3f3")),
         ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4)
     ]))
-    elems.append(goods_tbl)
-    elems.append(Spacer(1, 6))
+    elems.append(goods_tbl); elems.append(Spacer(1, 6))
 
-    # Incoterms / instr / tillval
-    incoterms = getattr(booking, "incoterms", "") or "-"
-    instructions = getattr(booking, "instructions", "") or "-"
+    # Incoterms / instruktioner / tillval
+    incoterms = _get(booking, ["incoterms"], "-") or "-"
+    instructions = _get(booking, ["instructions"], "-") or "-"
     accessorials = []
-    if getattr(booking, "tail_lift", False): accessorials.append("Tail-lift")
-    if getattr(booking, "pre_notice", False): accessorials.append("Pre-notice")
+    if bool(_get(booking, ["tail_lift"], False)): accessorials.append("Tail-lift")
+    if bool(_get(booking, ["pre_notice"], False)): accessorials.append("Pre-notice")
     accessorials_str = ", ".join(accessorials) if accessorials else "-"
 
     info_tbl = Table([
-        [Paragraph("<b>13. Incoterms</b>", normal), Paragraph("<b>14. Special instructions</b>", normal), Paragraph("<b>15. Accessorials</b>", normal)],
-        [incoterms, Paragraph(instructions, normal), accessorials_str]
+        [Paragraph("<b>13. Incoterms</b>", normal),
+         Paragraph("<b>14. Special instructions</b>", normal),
+         Paragraph("<b>15. Accessorials</b>", normal)],
+        [incoterms, Paragraph(str(instructions), normal), accessorials_str]
     ], colWidths=[35*mm, 95*mm, 55*mm])
     info_tbl.setStyle(TableStyle([
         ("BOX",(0,0),(-1,-1),0.6,colors.black),
@@ -145,10 +226,9 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("VALIGN",(0,0),(-1,-1),"TOP"),
         ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4)
     ]))
-    elems.append(info_tbl)
-    elems.append(Spacer(1, 6))
+    elems.append(info_tbl); elems.append(Spacer(1, 6))
 
-    # Signaturblock
+    # Signaturer
     sign_tbl = Table([
         [Paragraph("<b>16. Shipper signature (date/place)</b>", normal),
          Paragraph("<b>17. Carrier signature (date/place)</b>", normal),
@@ -160,10 +240,9 @@ def generate_cmr_pdf_bytes(booking, carrier_info: dict) -> bytes:
         ("GRID",(0,0),(-1,-1),0.3,colors.grey),
         ("TOPPADDING",(0,1),(-1,1),18),
     ]))
-    elems.append(sign_tbl)
-    elems.append(Spacer(1, 4))
+    elems.append(sign_tbl); elems.append(Spacer(1, 4))
 
-    # Footer med CMR/Booking nr
+    # Footer
     elems.append(Paragraph(f"CMR/Booking No: <b>{cmr_number}</b>", normal))
 
     # Bygg PDF

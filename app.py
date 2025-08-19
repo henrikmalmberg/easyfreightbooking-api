@@ -138,7 +138,7 @@ CORS(app, resources={
             "https://easyfreightbooking.com",
         ],
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
+        "allow_headers": ["Content-Type", "Authorization", "authorization"],
         "expose_headers": ["Content-Disposition"],  # <-- korrekt plats
         "max_age": 86400,
     }
@@ -554,30 +554,23 @@ def addresses_delete(addr_id):
 @app.route("/admin/bookings/<booking_id>/reassign", methods=["POST", "PATCH", "OPTIONS"])
 @require_auth("superadmin")
 def admin_booking_reassign(booking_id):
-    # Let CORS preflight succeed
+    # Låt CORS preflight passera
     if request.method == "OPTIONS":
         return ("", 204)
 
     db = SessionLocal()
     try:
-        # Find booking by integer id OR by booking_number (e.g. GD-ABC-12345)
-        b = None
-        try:
-            bid = int(booking_id)
-            b = db.query(Booking).filter(Booking.id == bid).first()
-        except ValueError:
-            b = db.query(Booking).filter(Booking.booking_number == booking_id).first()
-
+        # ✔︎ Stöd för int-id, UUID och bokningsnummer via din helper
+        b = _booking_lookup(db, str(booking_id))
         if not b:
             return jsonify({"error": "Not found"}), 404
 
         payload = request.get_json(force=True) or {}
 
-        # accept both keys from frontend
+        # acceptera både organization_id och org_id
         org_id_val = payload.get("organization_id", payload.get("org_id"))
         if org_id_val is None:
             return jsonify({"error": "organization_id is required"}), 400
-
         try:
             new_org_id = int(org_id_val)
         except Exception:
@@ -587,7 +580,7 @@ def admin_booking_reassign(booking_id):
         if not org:
             return jsonify({"error": "Organization not found"}), 404
 
-        # optional user_id handling
+        # user_id (valfritt): None för att nolla, annars måste tillhöra org
         new_user_id = payload.get("user_id", "__missing__")
         if new_user_id != "__missing__":
             if new_user_id is None:
@@ -604,7 +597,7 @@ def admin_booking_reassign(booking_id):
                     return jsonify({"error": "user_id must belong to the target organization"}), 400
                 b.user_id = u.id
         else:
-            # if org changes and user_id not explicitly provided → clear it
+            # om org byts och user_id inte explicit skickas → nolla user_id
             if b.org_id != new_org_id:
                 b.user_id = None
 
@@ -624,6 +617,7 @@ def admin_booking_reassign(booking_id):
         return jsonify({"error": "Server error", "detail": str(e)}), 500
     finally:
         db.close()
+
 
 @app.post("/login")
 def login():

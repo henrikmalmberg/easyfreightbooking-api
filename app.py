@@ -53,6 +53,10 @@ def extract_token_from_request():
         return auth.split(" ", 1)[1]
     return request.args.get("jwt") or request.args.get("token")
 
+from functools import wraps
+from flask import request, g, make_response
+import jwt
+
 def require_auth(role=None, *roles):
     """
     Användning:
@@ -70,6 +74,10 @@ def require_auth(role=None, *roles):
     def _decorator(fn):
         @wraps(fn)
         def _wrapped(*args, **kwargs):
+            # ✅ Låt CORS-preflight passera utan auth
+            if request.method == "OPTIONS":
+                return make_response(("", 204))
+
             token = extract_token_from_request()
             if not token:
                 abort(401, "Missing token")
@@ -86,11 +94,14 @@ def require_auth(role=None, *roles):
                 "role": claims.get("role"),
             }
             g.jwt = claims
+
             if allowed and request.user["role"] not in allowed:
                 abort(403, "Forbidden")
+
             return fn(*args, **kwargs)
         return _wrapped
     return _decorator
+
 
 @app.get("/debug/whoami")
 @require_auth()
